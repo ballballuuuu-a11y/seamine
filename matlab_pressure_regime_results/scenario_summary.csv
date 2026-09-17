@@ -1,0 +1,5 @@
+scenario,regime,velocity_mps,length_froude_number,depth_froude_number,water_depth_to_length,maximum_absolute_dynamic_pressure_pa,peak_time_s
+水面舰艇低速回转体,surface_ship_low_speed,2.05826937012627,0.06,0.109544511501033,0.3,9.61310454071358,30
+水面舰艇平滑过渡,surface_ship_transition,3.43044895021045,0.1,0.182574185835055,0.3,30.1118376092538,30
+水面舰艇浅水亚临界,surface_ship_shallow_subcritical,6.17480811037882,0.18,0.3286335345031,0.3,111.123731884608,30
+深潜潜艇无兴波,submarine_no_wave,8,0.285617396245807,0.255463965424847,1.25,19.9072400350547,30

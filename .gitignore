@@ -1,0 +1,35 @@
+# CMake 构建目录和生成文件。
+/build/
+/out/
+/cmake-build-*/
+/CMakeUserPresets.json
+
+# 编译器中间文件和可执行文件。
+*.obj
+*.o
+*.exe
+*.dll
+*.lib
+*.pdb
+
+# 示例程序生成的仿真数据。
+/electric_field_simulation.csv
+/magnetic_field_distribution.csv
+/magnetic_field_time_series.csv
+/pressure_field_time_series.csv
+
+# 常见编辑器和系统临时文件。
+/.vs/
+/.vscode/
+*.user
+*.suo
+.DS_Store
+Thumbs.db
+
+# 本地代码索引和 Python 缓存。
+/.codegraph/
+__pycache__/
+*.pyc
+
+# Word 打开文档时产生的临时锁文件。
+~$*.docx
