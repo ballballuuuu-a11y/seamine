@@ -45,6 +45,12 @@ end
 
 pressureData = readtable(pressureFile);
 
+% 新版 CSV 保存实际采用的环境参数，覆盖旧演示说明中的固定水深和密度。
+if ismember('water_depth_m', pressureData.Properties.VariableNames)
+    simulationParameters.waterDepthM = pressureData.water_depth_m(1);
+    simulationParameters.waterDensityKgM3 = pressureData.water_density_kg_m3(1);
+end
+
 %% 三、查找动态压力绝对值峰值
 % 水雷目标特征检测通常关注去除静水基线后的动态压力。
 [~, peakIndex] = max(abs(pressureData.dynamic_pressure_pa));
@@ -83,7 +89,7 @@ plot(pressureData.time_s, ...
 grid on;
 xlabel('时间 / s');
 ylabel('总表压 / kPa');
-title('静水压力与动态压力叠加结果');
+title('目标压力与静水基线（原模型结果）');
 
 %% 六、绘制目标航迹和传感器位置
 trajectoryAxes = subplot(2, 2, 3);
@@ -196,3 +202,44 @@ fprintf('动态压力绝对值峰值：%.6f Pa\n', peakPressure);
 fprintf('峰值发生时刻：%.3f s\n', peakTime);
 fprintf('峰值时目标距离：%.3f m\n', ...
     pressureData.distance_m(peakIndex));
+
+%% 十、显示 HJC 环境背景与合成总场
+% 旧 CSV 没有新字段时仍可绘制原图；环境海浪和目标兴波分别显示。
+if all(ismember({'signal_only_pa', 'environment_only_pa', 'total_field_pa', ...
+        'total_dynamic_pressure_pa', 'environment_tide_pressure_pa', ...
+        'environment_wave_pressure_pa', 'environment_shipping_pressure_pa'}, ...
+        pressureData.Properties.VariableNames))
+    figure('Name', 'HJC 水压环境与总场', 'Color', 'w', ...
+        'Position', [120, 100, 1200, 780]);
+    subplot(2, 2, 1);
+    plot(pressureData.time_s, pressureData.signal_only_pa, 'b-', 'LineWidth', 1.4);
+    grid on; xlabel('时间 / s'); ylabel('目标压力 / Pa');
+    title('目标贡献（不含静水及环境背景）');
+
+    subplot(2, 2, 2);
+    % 潮汐基线远大于海浪与航运波动，使用明确标注的双纵轴分别显示。
+    yyaxis left;
+    backgroundLines = plot(pressureData.time_s, [pressureData.environment_wave_pressure_pa, ...
+        pressureData.environment_shipping_pressure_pa], 'LineWidth', 1.2);
+    ylabel('海浪 / 航运压力 / Pa');
+    yyaxis right;
+    tideLine = plot(pressureData.time_s, pressureData.environment_tide_pressure_pa / 1000, ...
+        '--', 'LineWidth', 1.2);
+    ylabel('潮汐压力 / kPa');
+    grid on; xlabel('时间 / s');
+    title('环境分量（左右轴单位不同）');
+    legend([backgroundLines; tideLine], '环境海浪', '其他船舶', '潮汐', 'Location', 'best');
+
+    subplot(2, 2, 3);
+    plot(pressureData.time_s, pressureData.total_dynamic_pressure_pa, 'LineWidth', 1.4);
+    grid on; xlabel('时间 / s'); ylabel('合成动态压力 / Pa');
+    title('目标与环境叠加，并去除静水基线');
+
+    subplot(2, 2, 4);
+    plot(pressureData.time_s, [pressureData.environment_only_pa, pressureData.total_field_pa] / 1000, ...
+        'LineWidth', 1.2);
+    grid on; xlabel('时间 / s'); ylabel('表压 / kPa');
+    title('包含静水基线的背景与总场');
+    legend('背景场', '合成总场', 'Location', 'best');
+    fprintf('HJC 环境来源与配置记录：%s.environment.txt\n', pressureFile);
+end

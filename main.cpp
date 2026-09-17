@@ -1,11 +1,14 @@
 #include "TargetElectricFieldModel.h"
 #include "TargetMagneticFieldModel.h"
 #include "TargetPressureFieldModel.h"
+#include "integration/hjc/PressureFieldSimulation.h"
+#include "integration/hjc/PressureEnvironmentConfig.h"
 
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
 #include <fstream>
+#include <filesystem>
 #include <iomanip>
 #include <iostream>
 #include <stdexcept>
@@ -310,12 +313,12 @@ const char* pressureFieldRegimeName(
 /**
  * @brief 把运动目标水压场时序覆盖写入 CSV 文件。
  * @param outputPath CSV 输出文件路径。
- * @param samples 按时间升序排列的水压场采样结果。
+ * @param result 包含目标、背景与总场的水压时序及实际环境参数。
  * @throws std::runtime_error 无法创建或写入输出文件时抛出。
  */
 void writePressureTimeSeriesCsv(
     const std::string& outputPath,
-    const std::vector<TargetPressureFieldModel::PressureFieldSample>& samples)
+    const PressureFieldSimulation::Output& result)
 {
     std::ofstream output(outputPath, std::ios::out | std::ios::trunc);
     if (!output)
@@ -331,11 +334,16 @@ void writePressureTimeSeriesCsv(
               "body_dynamic_pressure_pa,free_surface_correction_pressure_pa,"
               "wave_pressure_pa,seabed_correction_pressure_pa,"
               "dynamic_pressure_pa,"
-              "total_gauge_pressure_pa\n";
-    output << std::setprecision(12);
+              "total_gauge_pressure_pa,signal_only_pa,environment_only_pa,total_field_pa,"
+              "total_dynamic_pressure_pa,environment_tide_pressure_pa,"
+              "environment_wave_pressure_pa,environment_shipping_pressure_pa,"
+              "water_depth_m,water_density_kg_m3\n";
+    // 保留旧列的物理含义；新总场另列输出，17 位有效数字支持逐点复核。
+    output << std::setprecision(17);
 
-    for (const auto& sample : samples)
+    for (const auto& combined : result.samples)
     {
+        const auto& sample = combined.target;
         output
             << sample.time << ','
             << sample.targetPosition.x << ','
@@ -359,13 +367,40 @@ void writePressureTimeSeriesCsv(
             << sample.wavePressure << ','
             << sample.seabedCorrectionPressure << ','
             << sample.dynamicPressure << ','
-            << sample.totalGaugePressure << '\n';
+            << sample.totalGaugePressure << ','
+            << combined.signalOnly << ','
+            << combined.environmentOnly << ','
+            << combined.totalField << ','
+            << combined.totalDynamicPressure << ','
+            << combined.tidePressure << ','
+            << combined.environmentWavePressure << ','
+            << combined.shippingPressure << ','
+            << result.waterDepthM << ','
+            << result.waterDensityKgM3 << '\n';
     }
 
     if (!output)
     {
         throw std::runtime_error("写入水压场时序输出文件失败：" + outputPath);
     }
+}
+
+/** 保存环境配置原文和质量信息，避免合成演示结果被误认为实测海况。 */
+void writePressureEnvironmentMetadata(const std::string& outputPath,
+    const PressureEnvironmentConfig& config, const hjc::field::QualityInfo& quality)
+{
+    std::ofstream output(outputPath + ".environment.txt", std::ios::trunc);
+    if (!output) throw std::runtime_error("无法创建水压环境说明文件");
+    output << "水压环境配置与计算记录\n"
+           << "status=" << hjc::field::toString(quality.status) << '\n'
+           << "method=" << quality.method << '\n'
+           << "model_version=" << quality.modelVersion << '\n'
+           << "source=" << quality.sourceUri << '\n';
+    for (const auto& flag : quality.flags) output << "flag=" << flag << '\n';
+    for (const auto& issue : quality.issues)
+        output << "issue=" << issue.fieldPath << ": " << issue.message << '\n';
+    output << "\n以下为原始配置；TAI 纳秒、ENU 坐标，压力单位 Pa。\n" << config.sourceText;
+    if (!output) throw std::runtime_error("写入水压环境说明文件失败");
 }
 
 /**
@@ -461,7 +496,7 @@ void printMagneticTimeSeriesSummary(
  */
 void printPressureTimeSeriesSummary(
     const std::string& outputPath,
-    const std::vector<TargetPressureFieldModel::PressureFieldSample>& samples)
+    const std::vector<PressureFieldSimulation::Sample>& samples)
 {
     const auto strongest = std::max_element(
         samples.begin(),
@@ -469,52 +504,65 @@ void printPressureTimeSeriesSummary(
         [](const auto& lhs, const auto& rhs)
         {
             // 以动态压力绝对值衡量水压异常信号强弱。
-            return std::abs(lhs.dynamicPressure) <
-                std::abs(rhs.dynamicPressure);
+            return std::abs(lhs.totalDynamicPressure) <
+                std::abs(rhs.totalDynamicPressure);
         });
 
-    std::cout << "运动目标水压场时序仿真完成\n";
+    std::cout << "目标水压与 HJC 环境背景合成完成\n";
     std::cout << "水压场时序采样点数：" << samples.size() << '\n';
     std::cout << "水动力工况："
-              << pressureFieldRegimeName(samples.front().regime) << '\n';
-    std::cout << "船长弗劳德数：" << samples.front().lengthFroudeNumber
-              << "，水深弗劳德数：" << samples.front().depthFroudeNumber
+              << pressureFieldRegimeName(samples.front().target.regime) << '\n';
+    std::cout << "船长弗劳德数：" << samples.front().target.lengthFroudeNumber
+              << "，水深弗劳德数：" << samples.front().target.depthFroudeNumber
               << '\n';
-    std::cout << "最大动态压力变化：" << strongest->dynamicPressure
-              << " Pa，发生时刻：" << strongest->time << " s\n";
+    std::cout << "合成动态压力绝对值峰值对应数值：" << strongest->totalDynamicPressure
+              << " Pa，发生时刻：" << strongest->target.time << " s\n";
     std::cout << "水压场时序结果文件：" << outputPath << '\n';
 }
 } // 匿名命名空间
 
 /**
  * @brief 程序入口，生成舰船电场、磁场和水压场仿真 CSV。
- * @param argc 命令行参数总数；最多允许指定四个输出文件路径。
- * @param argv 依次为电场、磁场空间分布、磁场时序和水压场时序输出路径。
+ * @param argc 命令行参数总数。
+ * @param argv 四个可选输出路径，以及 --pressure-environment 配置文件路径。
  * @return 成功时返回 EXIT_SUCCESS，参数错误或仿真异常时返回 EXIT_FAILURE。
  */
 int main(int argc, char* argv[])
 {
     configureConsoleEncoding();
 
-    if (argc > 5)
-    {
-        std::cerr << "用法：seamine_simulator [电场CSV路径] "
-                     "[磁场分布CSV路径] [磁场时序CSV路径] "
-                     "[水压场时序CSV路径]\n";
-        return EXIT_FAILURE;
-    }
-
-    const std::string outputPath =
-        argc >= 2 ? argv[1] : "electric_field_simulation.csv";
-    const std::string magneticOutputPath =
-        argc >= 3 ? argv[2] : "magnetic_field_distribution.csv";
-    const std::string magneticTimeOutputPath =
-        argc >= 4 ? argv[3] : "magnetic_field_time_series.csv";
-    const std::string pressureTimeOutputPath =
-        argc >= 5 ? argv[4] : "pressure_field_time_series.csv";
-
     try
     {
+        // 保持原四个位置参数，新增具名水压配置参数；默认配置随程序部署。
+        std::vector<std::string> paths;
+        auto environmentPath = std::filesystem::absolute(argv[0]).parent_path() / "pressure_environment_demo.ini";
+        bool hasEnvironmentPath = false;
+        for (int index = 1; index < argc; ++index)
+        {
+            const std::string argument = argv[index];
+            if (argument == "--help")
+            {
+                std::cout << "用法：seamine_simulator [电场CSV] [磁场分布CSV] [磁场时序CSV] [水压CSV] "
+                             "[--pressure-environment 环境配置.ini]\n默认使用程序旁的合成海况演示配置。\n";
+                return EXIT_SUCCESS;
+            }
+            if (argument == "--pressure-environment")
+            {
+                if (hasEnvironmentPath || index + 1 >= argc)
+                    throw std::invalid_argument("--pressure-environment 必须且只能指定一个配置路径");
+                environmentPath = std::filesystem::u8path(argv[++index]);
+                hasEnvironmentPath = true;
+            }
+            else if (argument.compare(0, 2, "--") == 0)
+                throw std::invalid_argument("未知命令行参数：" + argument);
+            else paths.push_back(argument);
+        }
+        if (paths.size() > 4) throw std::invalid_argument("最多允许指定四个输出文件路径，请使用 --help 查看用法");
+        const std::string outputPath = paths.size() >= 1 ? paths[0] : "electric_field_simulation.csv";
+        const std::string magneticOutputPath = paths.size() >= 2 ? paths[1] : "magnetic_field_distribution.csv";
+        const std::string magneticTimeOutputPath = paths.size() >= 3 ? paths[2] : "magnetic_field_time_series.csv";
+        const std::string pressureTimeOutputPath = paths.size() >= 4 ? paths[3] : "pressure_field_time_series.csv";
+        const auto pressureEnvironment = loadPressureEnvironmentConfig(environmentPath);
         const TargetElectricFieldModel model(createDemoTarget());
 
         // 固定传感器位于水下三十米，目标从其侧前方匀速通过。
@@ -565,21 +613,23 @@ int main(int argc, char* argv[])
             magneticTimeOutputPath, magneticTimeSamples);
 
         // 固定水压传感器位于海床上方，生成目标匀速通过时的连续水压异常。
-        const TargetPressureFieldModel pressureModel(
-            createPressureDemoTarget());
-        const TargetPressureFieldModel::Vector3 pressureSensorPosition{
-            0.0,
-            0.0,
-            -55.0};
-        const auto pressureTimeSamples = pressureModel.simulate(
-            pressureSensorPosition,
-            startTimeSeconds,
-            durationSeconds,
-            sampleRateHz);
+        PressureFieldSimulation::Request pressureRequest;
+        pressureRequest.target = createPressureDemoTarget();
+        pressureRequest.targetSourceId = 1;
+        pressureRequest.targetLineageId = "main-pressure-target";
+        pressureRequest.environment = pressureEnvironment.environment;
+        pressureRequest.sampling = {{0.0, 0.0, -55.0}, startTimeSeconds, durationSeconds, sampleRateHz};
+        pressureRequest.imageLayerCount = pressureEnvironment.imageLayerCount;
+        const auto pressureOutput = PressureFieldSimulation::simulate(pressureRequest);
         writePressureTimeSeriesCsv(
-            pressureTimeOutputPath, pressureTimeSamples);
+            pressureTimeOutputPath, pressureOutput);
+        writePressureEnvironmentMetadata(pressureTimeOutputPath, pressureEnvironment, pressureOutput.quality);
+        std::cout << "水压环境配置：" << environmentPath.u8string() << '\n'
+                  << "环境场景：" << pressureEnvironment.environment.scenarioId << '\n'
+                  << "环境数据说明：" << pressureEnvironment.environment.fieldProvenance.at("pressure_environment").dataset << '\n'
+                  << "环境来源：" << pressureEnvironment.environment.quality.sourceUri << '\n';
         printPressureTimeSeriesSummary(
-            pressureTimeOutputPath, pressureTimeSamples);
+            pressureTimeOutputPath, pressureOutput.samples);
     }
     catch (const std::exception& exception)
     {

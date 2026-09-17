@@ -159,3 +159,9 @@ Fr_H=\frac{U}{\sqrt{gH}}
 \[
 E=\exp\left(-\frac{gh}{U^2}\right)
 \]
+
+## HJC 环境背景扩展
+
+主程序现已新增目标、背景和合成总场，原模型 API 仍单独可用。
+新总场读取 `total_field_pa`；原 `total_gauge_pressure_pa` 仍表示目标与静水基线。
+配置及完整新增字段见 [水压环境接入说明](PressureEnvironmentIntegration.md)。

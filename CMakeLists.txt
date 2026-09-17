@@ -13,6 +13,13 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+# 先确定测试开关，再以源码方式编入 HJC；业务程序不调用 HJC 演示入口。
+include(CTest)
+set(HJC_BUILD_TESTS ${BUILD_TESTING} CACHE BOOL "构建 HJC 原有回归测试" FORCE)
+set(HJC_BUILD_EXAMPLES OFF CACHE BOOL "主工程不构建 HJC 独立演示" FORCE)
+set(HJC_BUILD_TOOLS ${BUILD_TESTING} CACHE BOOL "HJC 测试夹具需要数据准备工具" FORCE)
+add_subdirectory(HJC)
+
 # 核心模型单独构建为库，便于示例程序和其他工程复用。
 add_library(
     target_electric_field_model
@@ -46,7 +53,20 @@ target_include_directories(
         ${CMAKE_CURRENT_SOURCE_DIR}
 )
 
-# 按编译器启用严格警告，并确保微软编译器按 UTF-8 读取中文源文件。
+# 构建水压合成适配层，并为新增代码启用严格警告和中文源文件编码。
+add_library(pressure_environment_simulation
+    integration/hjc/PressureFieldSimulation.cpp
+    integration/hjc/PressureEnvironmentConfig.cpp
+)
+# 适配层单向依赖 HJC，现有目标水压模型不反向依赖环境模块。
+target_include_directories(pressure_environment_simulation PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(pressure_environment_simulation PUBLIC target_pressure_field_model hjc_field)
+if(MSVC)
+    target_compile_options(pressure_environment_simulation PRIVATE /W4 /permissive- /utf-8)
+else()
+    target_compile_options(pressure_environment_simulation PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+
 if(MSVC)
     target_compile_options(
         target_electric_field_model
@@ -86,6 +106,14 @@ target_link_libraries(
         target_electric_field_model
         target_magnetic_field_model
         target_pressure_field_model
+        pressure_environment_simulation
+)
+# 默认配置随可执行程序放置；运行时也可用命令行指定其他配置文件。
+add_custom_command(TARGET seamine_simulator POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${CMAKE_CURRENT_SOURCE_DIR}/config/pressure_environment_demo.ini"
+        "$<TARGET_FILE_DIR:seamine_simulator>/pressure_environment_demo.ini"
+    VERBATIM
 )
 if(MSVC)
     target_compile_options(seamine_simulator PRIVATE /W4 /permissive- /utf-8)
@@ -94,8 +122,22 @@ else()
 endif()
 
 # 启用内置测试目标，构建后可通过 CTest 一键验证。
-include(CTest)
 if(BUILD_TESTING)
+    # 集成测试覆盖原目标分量保持、背景合成、时序、单位和无效输入。
+    add_executable(pressure_environment_integration_tests tests/PressureEnvironmentIntegrationTests.cpp)
+    target_link_libraries(pressure_environment_integration_tests PRIVATE pressure_environment_simulation)
+    if(MSVC)
+        target_compile_options(pressure_environment_integration_tests PRIVATE /W4 /permissive- /utf-8)
+    else()
+        target_compile_options(pressure_environment_integration_tests PRIVATE -Wall -Wextra -Wpedantic)
+    endif()
+    add_test(NAME pressure_environment_integration_tests COMMAND pressure_environment_integration_tests
+        "${CMAKE_CURRENT_SOURCE_DIR}/config/pressure_environment_demo.ini"
+        "${CMAKE_CURRENT_BINARY_DIR}/pressure_environment_test_config.ini")
+    file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/pressure_environment_demo")
+    add_test(NAME seamine_pressure_environment_demo COMMAND seamine_simulator)
+    set_tests_properties(seamine_pressure_environment_demo PROPERTIES
+        WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/pressure_environment_demo")
     add_executable(
         target_electric_field_model_tests
         tests/TargetElectricFieldModelTests.cpp
@@ -178,6 +220,9 @@ install(
         target_electric_field_model
         target_magnetic_field_model
         target_pressure_field_model
+        pressure_environment_simulation
+        hjc_field
+        hjc_gsw
     RUNTIME DESTINATION bin
     LIBRARY DESTINATION lib
     ARCHIVE DESTINATION lib
@@ -189,3 +234,9 @@ install(
         TargetPressureFieldModel.h
     DESTINATION include
 )
+# 安装适配接口及所需的 HJC 头文件和第三方许可证。
+install(FILES integration/hjc/PressureFieldSimulation.h integration/hjc/PressureEnvironmentConfig.h
+    DESTINATION include/integration/hjc)
+install(DIRECTORY HJC/include/hjc DESTINATION include)
+install(FILES config/pressure_environment_demo.ini DESTINATION bin)
+install(FILES HJC/THIRD_PARTY_NOTICES.md HJC/third_party/gsw/LICENSE.txt DESTINATION share/seamine/HJC)

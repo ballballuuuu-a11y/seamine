@@ -17,6 +17,7 @@
 /magnetic_field_distribution.csv
 /magnetic_field_time_series.csv
 /pressure_field_time_series.csv
+/pressure_field_time_series.csv.environment.txt
 
 # 常见编辑器和系统临时文件。
 /.vs/

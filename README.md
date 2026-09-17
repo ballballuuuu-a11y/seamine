@@ -27,6 +27,9 @@
 
 ## 接口文档
 
+水压场已接入 HJC 环境背景：主程序额外输出目标、背景、合成总场及潮汐、海浪、其他船舶分量。
+默认配置为明确标记的合成海况。配置、运行和字段说明见 [水压环境接入说明](docs/PressureEnvironmentIntegration.md)。
+
 电场数据结构和函数说明请参阅 [`docs/静电场与轴频电场仿真数据结构与函数说明.md`](docs/静电场与轴频电场仿真数据结构与函数说明.md)；前端需要绘制电场时序、航迹或频谱时，请参阅 [`docs/ElectricFieldFrontendAPI.md`](docs/ElectricFieldFrontendAPI.md)；需要绘制静磁场分布、感应磁场三分量或综合磁场热力图时，请参阅 [`docs/MagneticFieldFrontendAPI.md`](docs/MagneticFieldFrontendAPI.md)；需要绘制运动目标水压异常时序或水下空间压力热力图时，请参阅 [`docs/PressureFieldFrontendAPI.md`](docs/PressureFieldFrontendAPI.md)。
 
 ## 编译
@@ -63,6 +66,11 @@ Visual Studio 多配置生成器：
 ```powershell
 .\build\Release\seamine_simulator.exe electric_result.csv magnetic_grid.csv magnetic_time.csv pressure_time.csv
 ```
+
+可通过 `--pressure-environment config/pressure_environment_demo.ini` 指定水压环境配置，
+无需重新编译。未指定时读取程序旁的同名演示配置；配置缺失时会报错。
+新水压总场列为 `total_field_pa`，原 `total_gauge_pressure_pa` 保持“目标＋静水”的含义。
+水压 CSV 同时生成 `.environment.txt` 来源说明文件。
 
 磁场 CSV 包含空间坐标、距离、静磁场三分量、感应磁场三分量、综合磁场三分量及各自模值，磁场单位统一为 `nT`。
 
