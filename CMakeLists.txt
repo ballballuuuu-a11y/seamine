@@ -61,6 +61,19 @@ add_library(pressure_environment_simulation
 # 适配层单向依赖 HJC，现有目标水压模型不反向依赖环境模块。
 target_include_directories(pressure_environment_simulation PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(pressure_environment_simulation PUBLIC target_pressure_field_model hjc_field)
+
+# 磁场适配层独立于水压流程；目标、环境和合成场由同一次 HJC 求解给出。
+add_library(magnetic_environment_simulation
+    integration/hjc/MagneticFieldSimulation.cpp
+    integration/hjc/MagneticEnvironmentConfig.cpp
+)
+target_include_directories(magnetic_environment_simulation PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(magnetic_environment_simulation PUBLIC target_magnetic_field_model hjc_field)
+if(MSVC)
+    target_compile_options(magnetic_environment_simulation PRIVATE /W4 /permissive- /utf-8)
+else()
+    target_compile_options(magnetic_environment_simulation PRIVATE -Wall -Wextra -Wpedantic)
+endif()
 if(MSVC)
     target_compile_options(pressure_environment_simulation PRIVATE /W4 /permissive- /utf-8)
 else()
@@ -107,12 +120,25 @@ target_link_libraries(
         target_magnetic_field_model
         target_pressure_field_model
         pressure_environment_simulation
+        magnetic_environment_simulation
 )
 # 默认配置随可执行程序放置；运行时也可用命令行指定其他配置文件。
 add_custom_command(TARGET seamine_simulator POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
         "${CMAKE_CURRENT_SOURCE_DIR}/config/pressure_environment_demo.ini"
         "$<TARGET_FILE_DIR:seamine_simulator>/pressure_environment_demo.ini"
+    VERBATIM
+)
+# 磁场演示资源随程序部署，避免运行时依赖源码机器的绝对路径。
+add_custom_command(TARGET seamine_simulator POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${CMAKE_CURRENT_SOURCE_DIR}/config/magnetic_environment_demo.ini"
+        "$<TARGET_FILE_DIR:seamine_simulator>/magnetic_environment_demo.ini"
+    COMMAND ${CMAKE_COMMAND} -E make_directory
+        "$<TARGET_FILE_DIR:seamine_simulator>/data/WMMHR2025"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${CMAKE_CURRENT_SOURCE_DIR}/HJC/data/WMMHR2025/WMMHR.COF"
+        "$<TARGET_FILE_DIR:seamine_simulator>/data/WMMHR2025/WMMHR.COF"
     VERBATIM
 )
 if(MSVC)
@@ -123,6 +149,18 @@ endif()
 
 # 启用内置测试目标，构建后可通过 CTest 一键验证。
 if(BUILD_TESTING)
+    # 磁场集成回归覆盖三组矢量场、近场拒绝、环境有效期及显式资源缺失。
+    add_executable(magnetic_environment_integration_tests tests/MagneticEnvironmentIntegrationTests.cpp)
+    target_link_libraries(magnetic_environment_integration_tests PRIVATE magnetic_environment_simulation)
+    if(MSVC)
+        target_compile_options(magnetic_environment_integration_tests PRIVATE /W4 /permissive- /utf-8)
+    else()
+        target_compile_options(magnetic_environment_integration_tests PRIVATE -Wall -Wextra -Wpedantic)
+    endif()
+    add_test(NAME magnetic_environment_integration_tests COMMAND magnetic_environment_integration_tests
+        "${CMAKE_CURRENT_SOURCE_DIR}/config/magnetic_environment_demo.ini"
+        "${CMAKE_CURRENT_SOURCE_DIR}/HJC")
+
     # 集成测试覆盖原目标分量保持、背景合成、时序、单位和无效输入。
     add_executable(pressure_environment_integration_tests tests/PressureEnvironmentIntegrationTests.cpp)
     target_link_libraries(pressure_environment_integration_tests PRIVATE pressure_environment_simulation)
@@ -221,6 +259,7 @@ install(
         target_magnetic_field_model
         target_pressure_field_model
         pressure_environment_simulation
+        magnetic_environment_simulation
         hjc_field
         hjc_gsw
     RUNTIME DESTINATION bin
@@ -237,6 +276,10 @@ install(
 # 安装适配接口及所需的 HJC 头文件和第三方许可证。
 install(FILES integration/hjc/PressureFieldSimulation.h integration/hjc/PressureEnvironmentConfig.h
     DESTINATION include/integration/hjc)
+install(FILES integration/hjc/MagneticFieldSimulation.h integration/hjc/MagneticEnvironmentConfig.h
+    DESTINATION include/integration/hjc)
 install(DIRECTORY HJC/include/hjc DESTINATION include)
 install(FILES config/pressure_environment_demo.ini DESTINATION bin)
+install(FILES config/magnetic_environment_demo.ini DESTINATION bin)
+install(FILES HJC/data/WMMHR2025/WMMHR.COF DESTINATION bin/data/WMMHR2025)
 install(FILES HJC/THIRD_PARTY_NOTICES.md HJC/third_party/gsw/LICENSE.txt DESTINATION share/seamine/HJC)

@@ -16,6 +16,8 @@
 /electric_field_simulation.csv
 /magnetic_field_distribution.csv
 /magnetic_field_time_series.csv
+/magnetic_field_combined_time_series.csv
+/magnetic_field_combined_time_series.csv.environment.txt
 /pressure_field_time_series.csv
 /pressure_field_time_series.csv.environment.txt
 

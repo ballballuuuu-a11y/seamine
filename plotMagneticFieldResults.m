@@ -1,12 +1,12 @@
-%% 舰艇磁场空间分布与运动时序绘图
-% 本脚本读取 C++ 仿真程序输出的两份 CSV，并生成常用磁场图形。
+%% 舰艇目标异常与 HJC 环境合成磁场绘图
+% 原有两份 CSV 仍表示旧目标模型；新增第三份 CSV 表示 HJC 同次求得的目标、背景和合成场。
 
 clear;
 clc;
 close all;
 
 %% 一、当前 CSV 对应的仿真参数
-% 这些参数与 C++ 演示程序生成 validation_magnetic*.csv 时的配置一致。
+% 这些参数与 C++ 主程序的默认磁场演示场景一致。
 % 如果重新生成 CSV 时修改了仿真条件，应同步修改本节，避免图注与数据不一致。
 
 % 两组磁场数据共用的舰艇几何、姿态和磁性参数。
@@ -16,7 +16,7 @@ commonParameter.widthM = 15.0;
 commonParameter.heightM = 10.0;
 commonParameter.pitchDegrees = 0.0;
 commonParameter.rollDegrees = 0.0;
-commonParameter.geomagneticFieldNt = [18000.0, 30000.0, -42000.0];
+commonParameter.geomagneticFieldNt = [18000.0, 30000.0, -42000.0]; % 仅供旧目标模型使用，HJC 改用 WMM。
 commonParameter.relativePermeability = 180.0;
 commonParameter.magneticMaterialRatio = 0.035;
 commonParameter.remanentMagnetizationAm = [7.5, 0.8, -0.4];
@@ -50,7 +50,7 @@ spatialFigureText = sprintf([ ...
     commonParameter.heightM, spatialParameter.centerM, ...
     spatialParameter.headingDegrees, spatialParameter.observationDepthM);
 magneticFigureText = sprintf([ ...
-    '地磁 ENU=(%.0f, %.0f, %.0f) nT，相对磁导率 %.0f，' ...
+    '旧模型固定地磁 ENU=(%.0f, %.0f, %.0f) nT，相对磁导率 %.0f，' ...
     '磁性材料比例 %.3f'], ...
     commonParameter.geomagneticFieldNt, ...
     commonParameter.relativePermeability, ...
@@ -68,7 +68,7 @@ fprintf('\n========== 舰艇磁场仿真基本参数 ==========\n');
 fprintf('目标：%s，尺寸 %.0f m × %.0f m × %.0f m\n', ...
     commonParameter.targetType, commonParameter.lengthM, ...
     commonParameter.widthM, commonParameter.heightM);
-fprintf('地磁 ENU：(%.0f, %.0f, %.0f) nT\n', ...
+fprintf('旧目标模型固定地磁 ENU：(%.0f, %.0f, %.0f) nT；HJC 目标场使用环境 WMM。\n', ...
     commonParameter.geomagneticFieldNt);
 fprintf('相对磁导率：%.0f，磁性材料比例：%.3f\n', ...
     commonParameter.relativePermeability, ...
@@ -89,24 +89,68 @@ fprintf(['固定传感器：(%.0f, %.0f, %.0f) m，时长 %.0f s，' ...
     motionParameter.sensorPositionM, motionParameter.durationS, ...
     motionParameter.sampleRateHz, motionParameter.sampleCount);
 
-%% 二、读取磁场空间分布和运动时序数据
-% 脚本文件放在工程根目录，因此可据此定位 build 目录。
+%% 二、读取旧目标模型与 HJC 合成结果
+% 优先使用工程根目录中的完整结果；CTest 演示结果放在 build/pressure_environment_demo。
 scriptPath = mfilename('fullpath');
 projectRoot = fileparts(scriptPath);
-spatialFile = fullfile(projectRoot, 'build', 'validation_magnetic.csv');
-timeSeriesFile = fullfile(projectRoot, 'build', ...
-    'validation_magnetic_time_series.csv');
-
-if exist(spatialFile, 'file') ~= 2
-    error('找不到磁场空间分布文件：%s', spatialFile);
+% 自定义结果目录时可直接填写绝对路径；留空则自动寻找三份同次演示输出。
+resultDirectory = '';
+if isempty(resultDirectory)
+    candidateDirectories = {projectRoot, ...
+        fullfile(projectRoot, 'build', 'pressure_environment_demo')};
+    for directoryIndex = 1:numel(candidateDirectories)
+        candidate = candidateDirectories{directoryIndex};
+        if exist(fullfile(candidate, 'magnetic_field_distribution.csv'), 'file') == 2 && ...
+                exist(fullfile(candidate, 'magnetic_field_time_series.csv'), 'file') == 2 && ...
+                exist(fullfile(candidate, 'magnetic_field_combined_time_series.csv'), 'file') == 2
+            resultDirectory = candidate;
+            break;
+        end
+    end
 end
-
-if exist(timeSeriesFile, 'file') ~= 2
-    error('找不到磁场时序文件：%s', timeSeriesFile);
+if isempty(resultDirectory)
+    error('找不到完整磁场结果，请先运行 seamine_simulator 或填写 resultDirectory。');
 end
+spatialFile = fullfile(resultDirectory, 'magnetic_field_distribution.csv');
+timeSeriesFile = fullfile(resultDirectory, 'magnetic_field_time_series.csv');
+combinedFile = fullfile(resultDirectory, 'magnetic_field_combined_time_series.csv');
 
 spatialData = readtable(spatialFile);
 timeData = readtable(timeSeriesFile);
+combinedData = readtable(combinedFile);
+
+% 三份结果需来自同一目标运动与采样时间轴，避免误把不同场景叠加展示。
+if size(timeData, 1) ~= size(combinedData, 1) || ...
+        any(abs(timeData.time_s - combinedData.time_s) > 1.0e-9)
+    error('旧目标时序与 HJC 合成时序的采样时间轴不一致。');
+end
+if any(~isfinite(combinedData.signal_magnitude_nt)) || ...
+        any(~isfinite(combinedData.environment_magnitude_nt)) || ...
+        any(~isfinite(combinedData.total_magnitude_nt))
+    error('HJC 磁场结果含有非有限数值。');
+end
+% 分量合成与标量异常按矢量定义逐点校验，不能将两个模长直接相加。
+combinedTolerance = 1.0e-5;
+for componentName = {'bx', 'by', 'bz'}
+    suffix = componentName{1};
+    signalColumn = combinedData.(['signal_' suffix '_nt']);
+    environmentColumn = combinedData.(['environment_' suffix '_nt']);
+    totalColumn = combinedData.(['total_' suffix '_nt']);
+    if any(abs(signalColumn + environmentColumn - totalColumn) > combinedTolerance)
+        error('HJC 磁场三分量合成校验失败：%s', suffix);
+    end
+end
+if any(abs(combinedData.total_magnitude_nt - ...
+        combinedData.environment_magnitude_nt - ...
+        combinedData.scalar_anomaly_nt) > combinedTolerance)
+    error('HJC 标量磁异常与合成场、背景场模长不一致。');
+end
+fprintf('磁场数据目录：%s\n', resultDirectory);
+fprintf('HJC 背景模长：%.3f～%.3f nT；目标异常模长：%.3f～%.3f nT。\n', ...
+    min(combinedData.environment_magnitude_nt), max(combinedData.environment_magnitude_nt), ...
+    min(combinedData.signal_magnitude_nt), max(combinedData.signal_magnitude_nt));
+fprintf('HJC 标量异常：%.3f～%.3f nT。\n', ...
+    min(combinedData.scalar_anomaly_nt), max(combinedData.scalar_anomaly_nt));
 
 %% 三、恢复指定深度的规则空间网格
 % 当前示例只有水下 30 米平面；若存在多个深度，这里选择第一个深度。
@@ -148,7 +192,7 @@ axis equal tight;
 colorbar;
 xlabel('东向位置 x / m');
 ylabel('北向位置 y / m');
-title(sprintf('静磁场强度，z = %.1f m', plotDepth));
+title(sprintf('旧模型目标剩磁场，z = %.1f m', plotDepth));
 
 subplot(2, 2, 2);
 imagesc(x, y, inducedMagnitude);
@@ -157,7 +201,7 @@ axis equal tight;
 colorbar;
 xlabel('东向位置 x / m');
 ylabel('北向位置 y / m');
-title('感应磁场强度');
+title('旧模型目标感应磁场');
 
 subplot(2, 2, 3);
 imagesc(x, y, totalMagnitude);
@@ -166,7 +210,7 @@ axis equal tight;
 colorbar;
 xlabel('东向位置 x / m');
 ylabel('北向位置 y / m');
-title('综合目标异常磁场强度');
+title('旧模型综合目标异常场');
 
 subplot(2, 2, 4);
 contourf(X, Y, totalMagnitude, 20, 'LineColor', 'none');
@@ -174,7 +218,7 @@ axis equal tight;
 colorbar;
 xlabel('东向位置 x / m');
 ylabel('北向位置 y / m');
-title('综合磁场等值线');
+title('旧模型目标异常场等值线');
 % MATLAB 2017 不支持 sgtitle，使用图窗文本框显示所有子图的总标题。
 annotation('textbox', [0.05, 0.91, 0.90, 0.08], ...
     'String', {'舰艇磁场空间分布', spatialFigureText, magneticFigureText}, ...
@@ -226,7 +270,7 @@ colormap(parula);
 xlabel('东向位置 x / m');
 ylabel('北向位置 y / m');
 zlabel('综合磁场强度 / nT');
-title({'综合目标异常磁场三维曲面', spatialFigureText, ...
+title({'旧模型目标异常磁场三维曲面', spatialFigureText, ...
     magneticFigureText}, 'Interpreter', 'none');
 view(45, 35);
 grid on;
@@ -244,7 +288,7 @@ hold off;
 grid on;
 xlabel('时间 / s');
 ylabel('综合磁场分量 / nT');
-title({'舰艇通过过程中综合磁场三分量', motionFigureText, ...
+title({'旧模型目标异常磁场三分量', motionFigureText, ...
     samplingFigureText}, 'Interpreter', 'none');
 legend('B_x 东向', 'B_y 北向', 'B_z 垂向', 'Location', 'best');
 
@@ -261,7 +305,7 @@ hold off;
 grid on;
 xlabel('时间 / s');
 ylabel('磁场强度 / nT');
-title({'舰艇通过过程中磁场强度变化', motionFigureText, ...
+title({'旧模型目标剩磁、感应与合成异常场', motionFigureText, ...
     samplingFigureText}, 'Interpreter', 'none');
 legend('静磁场', '感应磁场', '综合磁场', 'Location', 'best');
 
@@ -279,7 +323,7 @@ ylabel('目标至传感器距离 / m');
 
 grid on;
 xlabel('时间 / s');
-title({'综合磁场强度与目标距离随时间变化', motionFigureText, ...
+title({'旧模型目标异常场与距离随时间变化', motionFigureText, ...
     samplingFigureText}, 'Interpreter', 'none');
 legend('综合磁场强度', '目标距离', 'Location', 'best');
 
@@ -304,4 +348,58 @@ title({'运动目标航迹与磁传感器位置', motionFigureText, ...
 legend('目标航迹', '磁传感器', '起点', '终点', ...
     'Location', 'best');
 
-disp('磁场空间分布和运动时序图形已绘制完成。');
+%% 十一、分别显示 HJC 的目标、环境与合成磁场三分量
+% 背景约为数万 nT，目标异常通常远小于背景，因此三组场采用独立纵轴。
+figure('Name', 'HJC 目标、环境与合成磁场', 'Color', 'w');
+groupPrefixes = {'signal', 'environment', 'total'};
+groupTitles = {'目标异常场 signalOnly', '环境背景场 environmentOnly', ...
+    '传感器合成场 totalField'};
+for groupIndex = 1:3
+    subplot(3, 1, groupIndex);
+    prefix = groupPrefixes{groupIndex};
+    plot(combinedData.time_s, combinedData.([prefix '_bx_nt']), 'r-', 'LineWidth', 1.2);
+    hold on;
+    plot(combinedData.time_s, combinedData.([prefix '_by_nt']), 'g-', 'LineWidth', 1.2);
+    plot(combinedData.time_s, combinedData.([prefix '_bz_nt']), 'b-', 'LineWidth', 1.2);
+    hold off;
+    grid on;
+    ylabel('磁场 / nT');
+    title(groupTitles{groupIndex});
+    legend('东向 B_x', '北向 B_y', '上向 B_z', 'Location', 'best');
+end
+xlabel('时间 / s');
+
+%% 十二、显示目标异常模长、传感器总场模长和有符号标量异常
+figure('Name', 'HJC 磁场模长与标量异常', 'Color', 'w');
+subplot(3, 1, 1);
+plot(timeData.time_s, timeData.total_magnitude_nt, 'k--', 'LineWidth', 1.2);
+hold on;
+plot(combinedData.time_s, combinedData.signal_magnitude_nt, 'b-', 'LineWidth', 1.5);
+hold off;
+grid on;
+ylabel('目标异常 / nT');
+title('旧目标模型与 HJC 目标异常模长对照');
+legend('旧模型（固定地磁）', 'HJC（目标位置 WMM 地磁）', 'Location', 'best');
+
+subplot(3, 1, 2);
+plot(combinedData.time_s, combinedData.environment_magnitude_nt, 'k--', 'LineWidth', 1.2);
+hold on;
+plot(combinedData.time_s, combinedData.total_magnitude_nt, 'b-', 'LineWidth', 1.5);
+hold off;
+grid on;
+ylabel('总场模长 / nT');
+title('传感器处背景与合成场模长');
+legend('|B_{环境}|', '|B_{环境}+B_{目标}|', 'Location', 'best');
+
+subplot(3, 1, 3);
+plot(combinedData.time_s, combinedData.scalar_anomaly_nt, ...
+    'Color', [0.85, 0.33, 0.10], 'LineWidth', 1.6);
+hold on;
+plot(combinedData.time_s, zeros(size(combinedData.time_s)), 'k--');
+hold off;
+grid on;
+xlabel('时间 / s');
+ylabel('标量异常 / nT');
+title('有符号标量异常：|B_{总}|－|B_{环境}|');
+
+disp('旧模型磁场图与 HJC 目标、环境、合成场图已绘制完成。');

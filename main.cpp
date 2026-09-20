@@ -1,6 +1,8 @@
 #include "TargetElectricFieldModel.h"
 #include "TargetMagneticFieldModel.h"
 #include "TargetPressureFieldModel.h"
+#include "integration/hjc/MagneticFieldSimulation.h"
+#include "integration/hjc/MagneticEnvironmentConfig.h"
 #include "integration/hjc/PressureFieldSimulation.h"
 #include "integration/hjc/PressureEnvironmentConfig.h"
 
@@ -282,6 +284,49 @@ void writeMagneticTimeSeriesCsv(
     }
 }
 
+/** 将 HJC 同次求得的目标、背景及合成磁场按 ENU 三分量分别写出。 */
+void writeCombinedMagneticTimeSeriesCsv(
+    const std::string& outputPath, const hjc::field::MagneticSimulationOutput& result)
+{
+    std::ofstream output(outputPath, std::ios::out | std::ios::trunc);
+    if (!output) throw std::runtime_error("无法创建磁场合成输出文件：" + outputPath);
+    output << "time_s,signal_bx_nt,signal_by_nt,signal_bz_nt,"
+              "environment_bx_nt,environment_by_nt,environment_bz_nt,"
+              "total_bx_nt,total_by_nt,total_bz_nt,"
+              "signal_magnitude_nt,environment_magnitude_nt,total_magnitude_nt,scalar_anomaly_nt,"
+              "main_bx_nt,main_by_nt,main_bz_nt,"
+              "crustal_bx_nt,crustal_by_nt,crustal_bz_nt,crustal_scalar_nt,"
+              "fluctuation_bx_nt,fluctuation_by_nt,fluctuation_bz_nt,"
+              "local_bx_nt,local_by_nt,local_bz_nt,"
+              "motional_bx_nt,motional_by_nt,motional_bz_nt\n";
+    output << std::setprecision(17);
+    const auto& components = *result.components;
+    const auto magnitude = [](const hjc::field::MagneticSeriesNt& series, std::size_t index)
+    {
+        return std::hypot(series.x[index], series.y[index], series.z[index]);
+    };
+    for (std::size_t index = 0; index < result.timeSeconds.size(); ++index)
+    {
+        // 标量异常是合成矢量模长与背景矢量模长之差，不是目标模长。
+        const double signalMagnitude = magnitude(result.signalOnly, index);
+        const double environmentMagnitude = magnitude(result.environmentOnly, index);
+        const double totalMagnitude = magnitude(result.totalField, index);
+        output << result.timeSeconds[index] << ','
+               << result.signalOnly.x[index] << ',' << result.signalOnly.y[index] << ',' << result.signalOnly.z[index] << ','
+               << result.environmentOnly.x[index] << ',' << result.environmentOnly.y[index] << ',' << result.environmentOnly.z[index] << ','
+               << result.totalField.x[index] << ',' << result.totalField.y[index] << ',' << result.totalField.z[index] << ','
+               << signalMagnitude << ',' << environmentMagnitude << ',' << totalMagnitude << ','
+               << totalMagnitude - environmentMagnitude << ','
+               << components.mainField.x[index] << ',' << components.mainField.y[index] << ',' << components.mainField.z[index] << ','
+               << components.crustalAnomaly.x[index] << ',' << components.crustalAnomaly.y[index] << ','
+               << components.crustalAnomaly.z[index] << ',' << components.crustalAnomalyScalar[index] << ','
+               << components.fluctuation.x[index] << ',' << components.fluctuation.y[index] << ',' << components.fluctuation.z[index] << ','
+               << components.localAnomaly.x[index] << ',' << components.localAnomaly.y[index] << ',' << components.localAnomaly.z[index] << ','
+               << components.motional.x[index] << ',' << components.motional.y[index] << ',' << components.motional.z[index] << '\n';
+    }
+    if (!output) throw std::runtime_error("写入磁场合成输出文件失败：" + outputPath);
+}
+
 /** 把水压场工况枚举转换为稳定的 CSV 字符串。 */
 const char* pressureFieldRegimeName(
     TargetPressureFieldModel::PressureFieldRegime regime) noexcept
@@ -401,6 +446,25 @@ void writePressureEnvironmentMetadata(const std::string& outputPath,
         output << "issue=" << issue.fieldPath << ": " << issue.message << '\n';
     output << "\n以下为原始配置；TAI 纳秒、ENU 坐标，压力单位 Pa。\n" << config.sourceText;
     if (!output) throw std::runtime_error("写入水压环境说明文件失败");
+}
+
+/** 保留磁场数据来源和质量标志，区分演示、模型背景与实测数据。 */
+void writeMagneticEnvironmentMetadata(const std::string& outputPath,
+    const MagneticEnvironmentConfig& config, const hjc::field::QualityInfo& quality)
+{
+    std::ofstream output(outputPath + ".environment.txt", std::ios::trunc);
+    if (!output) throw std::runtime_error("无法创建磁场环境说明文件");
+    output << "磁场环境配置与计算记录\n"
+           << "status=" << hjc::field::toString(quality.status) << '\n'
+           << "method=" << quality.method << '\n'
+           << "model_version=" << quality.modelVersion << '\n'
+           << "source=" << quality.sourceUri << '\n';
+    for (const auto& flag : quality.flags) output << "flag=" << flag << '\n';
+    for (const auto& issue : quality.issues)
+        output << "issue=" << issue.fieldPath << ": " << issue.message << '\n';
+    output << "\n字段为 ENU 三分量、单位 nT；scalar_anomaly=|totalField|-|environmentOnly|。\n"
+           << "以下为原始配置；时间采用 TAI 纳秒基准。\n" << config.sourceText;
+    if (!output) throw std::runtime_error("写入磁场环境说明文件失败");
 }
 
 /**
@@ -533,17 +597,21 @@ int main(int argc, char* argv[])
 
     try
     {
-        // 保持原四个位置参数，新增具名水压配置参数；默认配置随程序部署。
+        // 保持原四个位置参数，新增可选的第五个合成磁场结果路径及两份环境配置。
         std::vector<std::string> paths;
-        auto environmentPath = std::filesystem::absolute(argv[0]).parent_path() / "pressure_environment_demo.ini";
+        const auto resourceRoot = std::filesystem::absolute(argv[0]).parent_path();
+        auto environmentPath = resourceRoot / "pressure_environment_demo.ini";
+        auto magneticEnvironmentPath = resourceRoot / "magnetic_environment_demo.ini";
         bool hasEnvironmentPath = false;
+        bool hasMagneticEnvironmentPath = false;
         for (int index = 1; index < argc; ++index)
         {
             const std::string argument = argv[index];
             if (argument == "--help")
             {
-                std::cout << "用法：seamine_simulator [电场CSV] [磁场分布CSV] [磁场时序CSV] [水压CSV] "
-                             "[--pressure-environment 环境配置.ini]\n默认使用程序旁的合成海况演示配置。\n";
+                std::cout << "用法：seamine_simulator [电场CSV] [磁场分布CSV] [磁场时序CSV] [水压CSV] [合成磁场CSV] "
+                             "[--pressure-environment 水压配置.ini] [--magnetic-environment 磁场配置.ini]\n"
+                             "默认使用程序旁明确标记为合成场景的演示配置。\n";
                 return EXIT_SUCCESS;
             }
             if (argument == "--pressure-environment")
@@ -553,16 +621,25 @@ int main(int argc, char* argv[])
                 environmentPath = std::filesystem::u8path(argv[++index]);
                 hasEnvironmentPath = true;
             }
+            else if (argument == "--magnetic-environment")
+            {
+                if (hasMagneticEnvironmentPath || index + 1 >= argc)
+                    throw std::invalid_argument("--magnetic-environment 必须且只能指定一个配置路径");
+                magneticEnvironmentPath = std::filesystem::u8path(argv[++index]);
+                hasMagneticEnvironmentPath = true;
+            }
             else if (argument.compare(0, 2, "--") == 0)
                 throw std::invalid_argument("未知命令行参数：" + argument);
             else paths.push_back(argument);
         }
-        if (paths.size() > 4) throw std::invalid_argument("最多允许指定四个输出文件路径，请使用 --help 查看用法");
+        if (paths.size() > 5) throw std::invalid_argument("最多允许指定五个输出文件路径，请使用 --help 查看用法");
         const std::string outputPath = paths.size() >= 1 ? paths[0] : "electric_field_simulation.csv";
         const std::string magneticOutputPath = paths.size() >= 2 ? paths[1] : "magnetic_field_distribution.csv";
         const std::string magneticTimeOutputPath = paths.size() >= 3 ? paths[2] : "magnetic_field_time_series.csv";
         const std::string pressureTimeOutputPath = paths.size() >= 4 ? paths[3] : "pressure_field_time_series.csv";
+        const std::string combinedMagneticOutputPath = paths.size() >= 5 ? paths[4] : "magnetic_field_combined_time_series.csv";
         const auto pressureEnvironment = loadPressureEnvironmentConfig(environmentPath);
+        const auto magneticEnvironment = loadMagneticEnvironmentConfig(magneticEnvironmentPath, resourceRoot);
         const TargetElectricFieldModel model(createDemoTarget());
 
         // 固定传感器位于水下三十米，目标从其侧前方匀速通过。
@@ -611,6 +688,20 @@ int main(int argc, char* argv[])
             magneticTimeOutputPath, magneticTimeSamples);
         printMagneticTimeSeriesSummary(
             magneticTimeOutputPath, magneticTimeSamples);
+
+        // 同一目标另由 HJC 求目标异常、传感器环境背景和逐分量合成；旧结果保持不变。
+        MagneticFieldSimulation::Request magneticRequest;
+        magneticRequest.target = createMovingMagneticDemoTarget();
+        magneticRequest.environment = magneticEnvironment.environment;
+        magneticRequest.sampling = {{magneticSensorPosition.x, magneticSensorPosition.y,
+            magneticSensorPosition.z}, startTimeSeconds, durationSeconds, sampleRateHz};
+        const auto combinedMagnetic = MagneticFieldSimulation::simulate(magneticRequest);
+        writeCombinedMagneticTimeSeriesCsv(combinedMagneticOutputPath, combinedMagnetic);
+        writeMagneticEnvironmentMetadata(combinedMagneticOutputPath,
+            magneticEnvironment, combinedMagnetic.quality);
+        std::cout << "HJC 磁场合成完成：" << combinedMagneticOutputPath << '\n'
+                  << "磁场环境配置：" << magneticEnvironmentPath.u8string() << '\n'
+                  << "磁场质量状态：" << hjc::field::toString(combinedMagnetic.quality.status) << '\n';
 
         // 固定水压传感器位于海床上方，生成目标匀速通过时的连续水压异常。
         PressureFieldSimulation::Request pressureRequest;

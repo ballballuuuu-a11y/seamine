@@ -1,5 +1,5 @@
-%% 舰艇磁场空间分布快速绘图
-% 本文件读取 validation_magnetic.csv，并显示综合目标异常磁场热力图。
+%% 旧目标模型的磁场空间分布快速绘图
+% 当前空间网格尚未接入 HJC；本图只表示目标剩磁与感应磁场，不含环境背景。
 % 下列参数是当前 CSV 对应的仿真条件；重新生成 CSV 后如有修改，应同步更新。
 
 % 舰艇几何、姿态和磁性基本参数。
@@ -23,8 +23,16 @@ simulationParameter.observationDepthM = -30.0;
 simulationParameter.xCount = 101;
 simulationParameter.yCount = 61;
 
-% 读取磁场仿真结果。
-filePath = 'C:\Users\Administrator\Desktop\seamine\build\validation_magnetic.csv';
+% 优先读取主程序结果，其次读取 CTest 演示结果；不依赖开发机器绝对路径。
+projectRoot = fileparts(mfilename('fullpath'));
+filePath = fullfile(projectRoot, 'magnetic_field_distribution.csv');
+if exist(filePath, 'file') ~= 2
+    filePath = fullfile(projectRoot, 'build', 'pressure_environment_demo', ...
+        'magnetic_field_distribution.csv');
+end
+if exist(filePath, 'file') ~= 2
+    error('找不到目标磁场空间分布文件，请先运行 seamine_simulator。');
+end
 data = readtable(filePath);
 
 % 在命令窗口输出本图对应的基本仿真参数。
@@ -34,7 +42,7 @@ fprintf('目标：%s，尺寸 %.0f m × %.0f m × %.0f m\n', ...
     simulationParameter.widthM, simulationParameter.heightM);
 fprintf('中心位置：(%.0f, %.0f, %.0f) m，航向 %.0f°\n', ...
     simulationParameter.centerM, simulationParameter.headingDegrees);
-fprintf('地磁 ENU：(%.0f, %.0f, %.0f) nT\n', ...
+fprintf('旧目标模型固定地磁 ENU：(%.0f, %.0f, %.0f) nT\n', ...
     simulationParameter.geomagneticFieldNt);
 fprintf('相对磁导率：%.0f，磁性材料比例：%.3f\n', ...
     simulationParameter.relativePermeability, ...
@@ -69,5 +77,5 @@ parameterText = sprintf([ ...
     simulationParameter.heightM, simulationParameter.centerM, ...
     simulationParameter.headingDegrees, ...
     simulationParameter.observationDepthM);
-title({'综合目标异常磁场分布', parameterText}, ...
+title({'旧目标模型的综合异常磁场分布（不含 HJC 背景）', parameterText}, ...
     'Interpreter', 'none');
