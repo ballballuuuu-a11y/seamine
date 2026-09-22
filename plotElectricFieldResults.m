@@ -33,6 +33,36 @@ end
 
 electricData = readtable(electricFile);
 
+% 合成电场文件由 HJC 输出；不存在时仍可绘制原来的纯目标结果。
+combinedCandidateFiles = {
+    fullfile(projectRoot, 'electric_field_combined_time_series.csv')
+    fullfile(projectRoot, 'build', 'electric_field_combined_time_series.csv')
+    fullfile(projectRoot, 'build', 'Release', 'electric_field_combined_time_series.csv')
+};
+combinedElectricFile = '';
+for fileIndex = 1:numel(combinedCandidateFiles)
+    if exist(combinedCandidateFiles{fileIndex}, 'file') == 2
+        combinedElectricFile = combinedCandidateFiles{fileIndex};
+        break;
+    end
+end
+combinedElectricData = table();
+if ~isempty(combinedElectricFile)
+    combinedElectricData = readtable(combinedElectricFile);
+    combinedRequiredColumns = {
+        'time_s', ...
+        'signal_ex_uV_m', 'signal_ey_uV_m', 'signal_ez_uV_m', ...
+        'environment_ex_uV_m', 'environment_ey_uV_m', 'environment_ez_uV_m', ...
+        'total_ex_uV_m', 'total_ey_uV_m', 'total_ez_uV_m', ...
+        'signal_magnitude_uV_m', 'environment_magnitude_uV_m', ...
+        'total_magnitude_uV_m', 'scalar_anomaly_uV_m'};
+    combinedMissingColumns = setdiff(...
+        combinedRequiredColumns, combinedElectricData.Properties.VariableNames);
+    if ~isempty(combinedMissingColumns)
+        error('合成电场 CSV 缺少字段：%s', strjoin(combinedMissingColumns, ', '));
+    end
+end
+
 % 检查绘图所需字段，避免 CSV 版本不一致时得到难以理解的错误。
 requiredColumns = {
     'time_s', 'distance_m', ...
@@ -221,7 +251,50 @@ plotThreeComponents(...
 saveFigure(figureHandle, ...
     fullfile(outputDirectory, '04_综合电场三分量.png'));
 
-%% 七、绘制轴频电场分量频谱
+%% 七、绘制目标电场、环境背景和传感器合成场
+if ~isempty(combinedElectricFile)
+    if height(combinedElectricData) ~= height(electricData) || ...
+            any(abs(combinedElectricData.time_s - time) > 1.0e-9)
+        error('目标电场与合成电场 CSV 的时间轴不一致。');
+    end
+
+    figureHandle = figure('Name', '目标电场与环境背景合成', ...
+        'Position', [175, 150, 1160, 820]);
+    subplot(2, 1, 1);
+    plot(time, combinedElectricData.signal_magnitude_uV_m, ...
+        'Color', [0.85, 0.33, 0.10], 'LineWidth', 1.4);
+    hold on;
+    plot(time, combinedElectricData.environment_magnitude_uV_m, ...
+        'Color', [0.00, 0.55, 0.35], 'LineWidth', 1.3);
+    plot(time, combinedElectricData.total_magnitude_uV_m, ...
+        'Color', [0.10, 0.10, 0.10], 'LineWidth', 1.7);
+    drawVerticalMarker(cpaTime, '最近通过时刻', [0.0, 0.0, 0.0], 'right');
+    hold off;
+    grid on;
+    xlabel('时间 / s');
+    ylabel('电场模值 / (\muV/m)');
+    title('目标场、环境背景场与传感器合成场');
+    legend('目标电场', '环境背景电场', '传感器合成电场', 'Location', 'best');
+
+    subplot(2, 1, 2);
+    plot(time, combinedElectricData.total_ex_uV_m, 'r-', 'LineWidth', 1.2);
+    hold on;
+    plot(time, combinedElectricData.total_ey_uV_m, ...
+        'Color', [0.00, 0.55, 0.25], 'LineWidth', 1.2);
+    plot(time, combinedElectricData.total_ez_uV_m, 'b-', 'LineWidth', 1.2);
+    drawVerticalMarker(cpaTime, '最近通过时刻', [0.0, 0.0, 0.0], 'right');
+    drawHorizontalReference(0.0, [0.40, 0.40, 0.40], ':');
+    hold off;
+    grid on;
+    xlabel('时间 / s');
+    ylabel('合成电场分量 / (\muV/m)');
+    title('传感器合成电场 ENU 三分量');
+    legend('E_x 东向', 'E_y 北向', 'E_z 垂向', 'Location', 'best');
+    saveFigure(figureHandle, ...
+        fullfile(outputDirectory, '07_目标环境与合成电场.png'));
+end
+
+%% 八、绘制轴频电场分量频谱
 % 频谱必须使用带正负号的分量，不使用始终非负的模值，
 % 否则取绝对值会人为产生额外的二倍频成分。
 componentMatrix = [
@@ -282,7 +355,7 @@ title(sprintf('轴频电场 %s 分量频谱', ...
 saveFigure(figureHandle, ...
     fullfile(outputDirectory, '05_轴频电场分量频谱.png'));
 
-%% 八、绘制目标航迹
+%% 九、绘制目标航迹
 % 当前 C++ 示例的电场传感器固定在 (0, 0, -30) m。
 sensorPosition = simulationParameters.sensorPositionM;
 
@@ -311,7 +384,7 @@ legend('目标航迹', '电场传感器', '起点', '终点', ...
 saveFigure(figureHandle, ...
     fullfile(outputDirectory, '06_目标航迹.png'));
 
-%% 九、输出主要结果和完整仿真参数
+%% 十、输出主要结果和完整仿真参数
 fprintf('已读取电场仿真文件：%s\n', electricFile);
 fprintf('电场采样点数：%d\n', height(electricData));
 fprintf('采样率：%.6f Hz\n', sampleRate);
@@ -319,6 +392,11 @@ fprintf('轴频基波：%.6f Hz\n', shaftFrequency);
 fprintf('最近通过时刻：%.6f s\n', cpaTime);
 fprintf('最近距离：%.6f m\n', minimumDistance);
 fprintf('图片输出目录：%s\n', outputDirectory);
+if ~isempty(combinedElectricFile)
+    fprintf('已读取合成电场文件：%s\n', combinedElectricFile);
+else
+    fprintf('未找到合成电场文件，仅绘制纯目标电场。\n');
+end
 fprintf('\n========== 当前电场仿真基本参数 ==========\n');
 fprintf('目标类型：%s\n', simulationParameters.targetType);
 fprintf('排水吨位：%.0f t\n', simulationParameters.tonnageT);

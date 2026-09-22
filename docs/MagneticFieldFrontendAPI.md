@@ -4,7 +4,7 @@
 
 ## 模拟流程
 
-磁场模拟从目标参数和地磁环境开始，先建立等效静态磁矩与感应磁矩，再根据使用场景生成空间网格或运动时序数据，最后输出 CSV 供 MATLAB 绘图。
+磁场模拟从目标参数和地磁环境开始，先建立椭球宏观静态磁矩与感应磁矩，再构造舰体内部多偶极子阵列影响矩阵，根据使用场景生成空间网格或运动时序数据，最后输出 CSV 供 MATLAB 绘图。
 
 ```mermaid
 flowchart TD
@@ -12,9 +12,10 @@ flowchart TD
     B --> C["建立等效椭球模型"]
     C --> D["计算剩磁静态磁矩"]
     C --> E["计算退磁因子与地磁感应磁矩"]
-    D --> F["磁偶极子场计算"]
+    D --> F["椭球宏观影响矩阵"]
     E --> F
-    F --> G{"仿真类型"}
+    F --> N["多偶极子阵列局部修整"]
+    N --> G{"仿真类型"}
     G --> H["零时刻空间网格"]
     G --> I["运动目标时间采样"]
     H --> J["磁场空间分布 CSV"]
@@ -31,6 +32,7 @@ flowchart TD
 - 输入航速，使目标从零时刻位置沿舰首方向匀速运动。
 - 输入地磁场东、北、上三分量，以及目标等效相对磁导率。
 - 输入目标坐标系中的剩磁强度三分量。
+- 设置舰体纵向、横向、垂向候选偶极子节点数和局部修整系数。
 - 计算任意观测点或规则空间网格上的静磁场、感应磁场与综合目标异常磁场。
 - 所有磁场输出单位为 `nT`，坐标单位为 `m`。
 
@@ -64,7 +66,11 @@ flowchart TD
     "relativePermeability": 180.0,
     "magneticMaterialRatio": 0.035,
     "remanentMagnetizationAm": { "x": 7.5, "y": 0.8, "z": -0.4 },
-    "minimumDistanceM": 2.0
+    "minimumDistanceM": 2.0,
+    "dipoleArrayLongitudinalCount": 7,
+    "dipoleArrayTransverseCount": 3,
+    "dipoleArrayVerticalCount": 3,
+    "localCorrectionStrength": 0.65
   },
   "grid": {
     "minimum": { "x": -250.0, "y": -150.0, "z": -30.0 },
@@ -76,7 +82,9 @@ flowchart TD
 }
 ```
 
-长度、宽度、高度必须大于 0；相对磁导率必须不小于 1；磁性材料等效体积占比必须在 `(0, 1]` 内。`minimumDistanceM` 是观测点到目标中心的额外最小距离。模型还会结合目标长、宽、高和当前姿态建立等效三轴椭球，拒绝椭球内部及表面上的观测点。网格三个方向的点数都必须大于 0，且总点数不能超过 100 万。
+长度、宽度、高度必须大于 0；相对磁导率必须不小于 1；磁性材料等效体积占比必须在 `(0, 1]` 内。阵列三个方向的候选节点数必须大于 0、乘积不超过 4096，局部修整系数必须在 `[0,1]` 内：0 表示只使用椭球宏观场，1 表示完整采用归一化阵列矩阵场。`minimumDistanceM` 是观测点到目标中心的额外最小距离。模型还会结合目标长、宽、高和当前姿态建立等效三轴椭球，拒绝椭球内部及表面上的观测点。网格三个方向的点数都必须大于 0，且总点数不能超过 100 万。
+
+单个节点的磁场由三阶影响矩阵 `G(r)` 与磁矩 `m` 相乘得到。最终影响矩阵为 `G宏观 + α(G阵列 - G宏观)`；阵列节点关于中心对称、权重归一，因此保持总磁矩和远场特征，差值项主要修整舰体附近的空间分布。
 
 上例把 z 的上下限都设为 `-30`，并设置 `zCount=1`，因此生成水下 30 米水平面的二维磁场分布。需要三维分布时，设置不同的 z 上下限和大于 1 的 `zCount`。
 
@@ -98,13 +106,16 @@ flowchart TD
       "distanceM": 292.617,
       "staticField": { "x": 0.0, "y": 0.0, "z": 0.0, "magnitude": 0.0 },
       "inducedField": { "x": 0.0, "y": 0.0, "z": 0.0, "magnitude": 0.0 },
-      "totalField": { "x": 0.0, "y": 0.0, "z": 0.0, "magnitude": 0.0 }
+      "totalField": { "x": 0.0, "y": 0.0, "z": 0.0, "magnitude": 0.0 },
+      "macroField": { "x": 0.0, "y": 0.0, "z": 0.0 },
+      "localCorrectionField": { "x": 0.0, "y": 0.0, "z": 0.0 },
+      "dipoleArrayNodeCount": 27
     }
   ]
 }
 ```
 
-`samples` 按 z、y、x 的顺序展开，x 变化最快。静磁场来自目标剩磁，感应磁场来自地磁对目标的磁化，综合场是两者的矢量和。
+`samples` 按 z、y、x 的顺序展开，x 变化最快。静磁场来自目标剩磁，感应磁场来自地磁对目标的磁化，综合场是两者的矢量和；同时也严格等于 `macroField + localCorrectionField`。
 
 ## 五、前端绘图字段
 
@@ -116,6 +127,8 @@ flowchart TD
 | 感应磁场北向分量 | `samples[].inducedField.y` |
 | 感应磁场垂向分量 | `samples[].inducedField.z` |
 | 综合目标异常磁场 | `samples[].totalField.magnitude` |
+| 椭球宏观场 | `samples[].macroField` |
+| 多偶极子局部修整量 | `samples[].localCorrectionField` |
 
 三分量字段带正负号，适合使用以 0 为中心的发散色带；模值始终非负，适合顺序色带。
 
@@ -158,9 +171,11 @@ flowchart TD
 - `sensorPosition`：固定传感器位置。
 - `distanceM`：目标到传感器的距离。
 - `staticField`、`inducedField`、`totalField`：三类磁场的 x、y、z 分量与模值。
+- `macroField`、`localCorrectionField`：椭球宏观场和阵列局部修整量三分量。
+- `dipoleArrayNodeCount`：实际位于椭球内部并参与求和的阵列节点数。
 
 MATLAB 绘制随时间变化的三分量曲线时，横轴使用 `timeSeconds`，纵轴分别使用 `totalField.x`、`totalField.y` 和 `totalField.z`；绘制场强包络时使用 `totalField.magnitude`。
 
 ## 七、模型适用范围
 
-当前实现是目标外部磁场的等效椭球—磁偶极子模型。模型按照目标长、宽、高及姿态拒绝等效三轴椭球内部和表面上的观测点，并保留 `minimumDistanceM` 作为目标中心距离的额外安全下限。该校验只能阻止明显无效的计算；观测点即使刚好位于椭球外部，单偶极子仍可能无法描述局部磁场细节。工程应用应使用多偶极子、有限元结果或实测数据进行标定。
+当前实现是目标外部磁场的“椭球宏观磁矩＋多偶极子局部修整”模型。模型按照目标长、宽、高及姿态拒绝等效三轴椭球内部和表面上的观测点，并保留 `minimumDistanceM` 作为目标中心距离的额外安全下限。阵列权重目前依据椭球内部位置平滑分配，并非舰艇消磁绕组、舱段材料或实测磁化分布的反演结果；工程级局部场仍应使用有限元或实测数据标定节点位置、权重和磁矩方向。

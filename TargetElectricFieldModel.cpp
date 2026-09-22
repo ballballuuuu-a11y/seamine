@@ -67,6 +67,20 @@ TargetElectricFieldModel::target() const
     return m_target;
 }
 
+double TargetElectricFieldModel::effectiveConductivity() const
+{
+    // 对外暴露实际参与求解的介质参数，供 HJC 合成链保持同源。
+    ensureConfigured();
+    return calculateConductivity();
+}
+
+double TargetElectricFieldModel::effectiveStaticDipoleMoment() const
+{
+    // 返回目标模型最终采用的偶极矩，避免适配层重复实现经验估算式。
+    ensureConfigured();
+    return calculateStaticDipoleMoment();
+}
+
 /**
  * @brief 计算指定传感器位置和指定时刻的三维瞬时电场。
  * @param sensorPosition 传感器全局坐标，单位 m。

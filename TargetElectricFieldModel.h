@@ -114,6 +114,20 @@ public:
     const TargetParameter& target() const;
 
     /**
+     * @brief 返回当前参数对应的有效海水电导率。
+     * @return 实测输入或由盐度、温度和压力估算的电导率，单位 S/m。
+     * @throws std::logic_error 模型尚未配置有效目标参数时抛出。
+     */
+    double effectiveConductivity() const;
+
+    /**
+     * @brief 返回当前参数对应的有效静态电流偶极矩。
+     * @return 实测输入或由船体几何及腐蚀参数估算的偶极矩，单位 A·m。
+     * @throws std::logic_error 模型尚未配置有效目标参数时抛出。
+     */
+    double effectiveStaticDipoleMoment() const;
+
+    /**
      * @brief 计算指定三维传感器位置和指定时刻的瞬时电场。
      * @param sensorPosition 固定传感器的全局三维坐标，单位 m。
      * @param timeSeconds 相对仿真零时刻的时间，单位 s；允许使用负值回算位置。

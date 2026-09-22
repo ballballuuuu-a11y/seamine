@@ -69,9 +69,14 @@ hjc::field::MagneticSimulationOutput MagneticFieldSimulation::simulate(const Req
     input.target.remanentMagnetizationAm = {target.remanentMagnetizationAm.x,
         target.remanentMagnetizationAm.y, target.remanentMagnetizationAm.z};
     input.target.minimumDistance = target.minimumDistance;
+    input.target.dipoleArrayLongitudinalCount = target.dipoleArrayLongitudinalCount;
+    input.target.dipoleArrayTransverseCount = target.dipoleArrayTransverseCount;
+    input.target.dipoleArrayVerticalCount = target.dipoleArrayVerticalCount;
+    input.target.localCorrectionStrength = target.localCorrectionStrength;
     input.environment = request.environment;
     input.sampling = request.sampling;
     input.keepComponents = true;
+    input.mode = MagneticSolverMode::EllipsoidDipoleArray;
     // 业务地磁唯一来源是环境模型，不把旧演示值差异误报成求解质量问题。
     input.checkLegacyGeomagneticField = false;
 
@@ -100,7 +105,9 @@ hjc::field::MagneticSimulationOutput MagneticFieldSimulation::simulate(const Req
         throw std::runtime_error("HJC 磁场时序或背景分量缺失");
     }
     const auto& components = *output.components;
-    if (!hasCount(components.mainField, count) ||
+    if (!hasCount(components.targetMacro, count) ||
+        !hasCount(components.targetLocalCorrection, count) ||
+        !hasCount(components.mainField, count) ||
         !hasCount(components.crustalAnomaly, count) ||
         components.crustalAnomalyScalar.size() != count ||
         !hasCount(components.fluctuation, count) ||

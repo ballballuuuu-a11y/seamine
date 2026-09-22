@@ -417,7 +417,25 @@ POST /api/v1/electric-field/calculate
 | `signal.totalField` | `totalField.magnitude` |
 | `signal.frequency` | `metadata.shaftFrequencyHz` |
 
-## 十、关于空间热力图
+## 十、HJC 环境背景合成字段
+
+合成接口必须同时返回目标、环境和传感器总场，不能只返回总模值：
+
+| 字段 | 含义 | 单位 |
+|---|---|---|
+| `signalOnly` | 目标静态电场与轴频电场的矢量和 | μV/m |
+| `environmentOnly` | 运动、其他船舶/设备和局部背景的矢量和 | μV/m |
+| `totalField` | `signalOnly + environmentOnly` | μV/m |
+| `components.targetStatic` | 目标腐蚀静态电场 | μV/m |
+| `components.targetShaft` | 目标轴频及谐波电场 | μV/m |
+| `components.motional` | 规定运动电场 | μV/m |
+| `components.shipping` | 其他电偶极子干扰场 | μV/m |
+| `components.local` | 局部电场格网值 | μV/m |
+| `scalarAnomaly` | `|totalField| - |environmentOnly|` | μV/m |
+
+前端应分别提供目标场、环境场和总场曲线开关。三个矢量必须先逐分量相加，再计算模值。
+
+## 十一、关于空间热力图
 
 当前 `simulate()` 计算的是“一个固定传感器随时间接收到的电场”，适合画时间曲线和目标航迹。
 

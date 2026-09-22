@@ -2,12 +2,14 @@
 
 这是一个可独立编译运行的 C++17 工程，用于生成水面舰船或潜艇的电场时序、静磁场和地磁感应磁场三分量空间分布、运动目标磁场时序，以及有限水深条件下的运动目标水压场时序和空间分布。
 
-电场模型采用均匀无限导电海水中的等效电流偶极子近似。磁场模型把目标等效为三轴磁化椭球体，根据长度、宽度、高度、姿态、地磁三分量、相对磁导率和剩磁计算等效磁矩，再用磁偶极子模型计算目标外部异常磁场。水压场模型根据目标类型和弗劳德数自动区分潜艇无兴波、水面舰艇低速回转体以及水面舰艇浅水亚临界工况；浅水判据默认采用 `H/L <= 0.3`，并在 `0.08 < FrL < 0.12` 内平滑混合低速和兴波边界项。输出分别给出静水压力、本体动态压力、自由液面修正、兴波压力、海床修正和总表压。各模型适合算法验证和合成数据生成；工程级场强预测仍需使用实测数据标定。
+电场模型采用均匀无限导电海水中的等效电流偶极子近似。磁场模型把目标等效为三轴磁化椭球体，根据长度、宽度、高度、姿态、地磁三分量、相对磁导率和剩磁计算宏观磁矩，再用舰体内部多偶极子阵列的三阶影响矩阵修整局部空间分布；阵列总权重为 1，因此远场仍收敛到椭球宏观磁矩。水压场模型根据目标类型和弗劳德数自动区分潜艇无兴波、水面舰艇低速回转体以及水面舰艇浅水亚临界工况；浅水判据默认采用 `H/L <= 0.3`，并在 `0.08 < FrL < 0.12` 内平滑混合低速和兴波边界项。输出分别给出静水压力、本体动态压力、自由液面修正、兴波压力、海床修正和总表压。各模型适合算法验证和合成数据生成；工程级场强预测仍需使用实测数据标定。
 
 ## 工程结构
 
 - `TargetElectricFieldModel.h`：模型公开接口和参数定义。
 - `TargetElectricFieldModel.cpp`：三维运动、电导率、静电场和轴频场实现。
+- `integration/hjc/ElectricFieldSimulation.*`：目标电场、环境电场和传感器合成场适配层。
+- `integration/hjc/ElectricEnvironmentConfig.*`：显式电导率、运动电场、干扰源和局部场配置。
 - `TargetMagneticFieldModel.h`：磁场目标参数、单点计算和空间网格接口。
 - `TargetMagneticFieldModel.cpp`：剩磁、地磁感应、退磁因子和三分量磁场实现。
 - `TargetPressureFieldModel.h`：水压场目标参数、单点、时序和空间网格接口。
@@ -30,8 +32,11 @@
 水压场已接入 HJC 环境背景：主程序额外输出目标、背景、合成总场及潮汐、海浪、其他船舶分量。
 默认配置为明确标记的合成海况。配置、运行和字段说明见 [水压环境接入说明](docs/PressureEnvironmentIntegration.md)。
 
-磁场时序已增加 HJC 的目标异常、环境背景和合成总场输出；原目标模型的网格及时序仍保留作对照。
+磁场时序已增加 HJC 的目标异常、环境背景和合成总场输出；独立目标模型与 HJC 均使用“椭球宏观场＋多偶极子局部修整”算法。
 配置、三轴字段和标量异常定义见 [磁场环境接入说明](docs/MagneticEnvironmentIntegration.md)。
+
+电场时序已接入 HJC 环境背景，合成结果分别保留目标静态/轴频场、规定运动电场、其他船舶或设备干扰场、局部场以及传感器总场。
+配置、单位和输出字段见 [电场环境接入说明](docs/ElectricEnvironmentIntegration.md)。
 
 电场数据结构和函数说明请参阅 [`docs/静电场与轴频电场仿真数据结构与函数说明.md`](docs/静电场与轴频电场仿真数据结构与函数说明.md)；前端需要绘制电场时序、航迹或频谱时，请参阅 [`docs/ElectricFieldFrontendAPI.md`](docs/ElectricFieldFrontendAPI.md)；需要绘制静磁场分布、感应磁场三分量或综合磁场热力图时，请参阅 [`docs/MagneticFieldFrontendAPI.md`](docs/MagneticFieldFrontendAPI.md)；需要绘制运动目标水压异常时序或水下空间压力热力图时，请参阅 [`docs/PressureFieldFrontendAPI.md`](docs/PressureFieldFrontendAPI.md)。
 
@@ -64,23 +69,24 @@ Visual Studio 多配置生成器：
 .\build\seamine_simulator.exe
 ```
 
-默认在当前目录生成 `electric_field_simulation.csv`、`magnetic_field_distribution.csv`、`magnetic_field_time_series.csv`、`pressure_field_time_series.csv` 和 `magnetic_field_combined_time_series.csv`。也可以依次指定五份输出文件；前四个位置参数保持兼容：
+默认在当前目录生成 `electric_field_simulation.csv`、`magnetic_field_distribution.csv`、`magnetic_field_time_series.csv`、`pressure_field_time_series.csv`、`magnetic_field_combined_time_series.csv` 和 `electric_field_combined_time_series.csv`。也可以依次指定六份输出文件；前五个位置参数保持兼容：
 
 ```powershell
-.\build\Release\seamine_simulator.exe electric_result.csv magnetic_grid.csv magnetic_time.csv pressure_time.csv magnetic_combined.csv
+.\build\Release\seamine_simulator.exe electric_target.csv magnetic_grid.csv magnetic_time.csv pressure_time.csv magnetic_combined.csv electric_combined.csv
 ```
 
 可通过 `--pressure-environment config/pressure_environment_demo.ini` 指定水压环境配置，
 通过 `--magnetic-environment config/magnetic_environment_demo.ini` 指定磁场环境配置；
+通过 `--electric-environment config/electric_environment_demo.ini` 指定电场环境配置；
 无需重新编译。未指定时读取程序旁的同名演示配置；配置缺失时会报错。
 新水压总场列为 `total_field_pa`，原 `total_gauge_pressure_pa` 保持“目标＋静水”的含义。
 水压 CSV 同时生成 `.environment.txt` 来源说明文件。
 
-磁场 CSV 包含空间坐标、距离、静磁场三分量、感应磁场三分量、综合磁场三分量及各自模值，磁场单位统一为 `nT`。
+磁场 CSV 包含空间坐标、距离、静磁场三分量、感应磁场三分量、综合磁场三分量、椭球宏观场、多偶极子局部修整量及阵列有效节点数，磁场单位统一为 `nT`。
 
 ## 使用 MATLAB 绘制电场结果
 
-先运行 C++ 示例生成 `electric_field_simulation.csv`，也可以直接使用
+先运行 C++ 示例生成 `electric_field_simulation.csv` 和 `electric_field_combined_time_series.csv`，也可以直接使用
 `build/validation_electric.csv`。然后在 MATLAB 命令窗口执行：
 
 ```matlab
@@ -88,7 +94,7 @@ run('plotElectricFieldResults.m')
 ```
 
 脚本会自动选择现有电场 CSV，绘制目标距离和电场强度通过曲线、静电场三分量、
-轴频电场三分量、综合电场三分量、综合电场分量频谱及目标航迹，并把 PNG 图片保存到
+轴频电场三分量、目标/环境/总场对比、综合电场分量频谱及目标航迹，并把 PNG 图片保存到
 `build/electric_field_figures`。
 
 ## 使用 MATLAB 运行水压场分工况仿真

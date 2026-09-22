@@ -91,12 +91,51 @@ void testInverseCubeAttenuation()
     param.center = {0.0, 0.0, 0.0};
     param.geomagneticFieldNt = {0.0, 0.0, 0.0};
     param.remanentMagnetizationAm = {8.0, 0.0, 0.0};
+    // 关闭局部修整后，纯椭球宏观总磁矩应严格保持偶极子远场规律。
+    param.localCorrectionStrength = 0.0;
     const TargetMagneticFieldModel model(param);
 
     const auto nearSample = model.calculate({100.0, 0.0, 0.0});
     const auto farSample = model.calculate({200.0, 0.0, 0.0});
     require(nearlyEqual(nearSample.staticField / farSample.staticField, 8.0),
             "静磁场没有按距离三次方反比衰减");
+}
+
+/** 验证阵列矩阵只修整局部场，并在远场收敛到椭球宏观总磁矩。 */
+void testDipoleArrayMatrixCorrection()
+{
+    auto param = createValidParameter();
+    param.center = {0.0, 0.0, 0.0};
+    param.geomagneticFieldNt = {0.0, 0.0, 0.0};
+    param.remanentMagnetizationAm = {8.0, 1.0, -0.5};
+    const TargetMagneticFieldModel model(param);
+
+    const auto nearSample = model.calculate({80.0, 25.0, -20.0});
+    require(nearSample.dipoleArrayNodeCount > 1U,
+            "默认多偶极子阵列没有生成多个有效节点");
+    require(std::hypot(nearSample.localCorrectionFieldVector.x,
+                       nearSample.localCorrectionFieldVector.y,
+                       nearSample.localCorrectionFieldVector.z) > 0.0,
+            "多偶极子阵列没有产生局部场修整量");
+    require(nearlyEqual(nearSample.totalFieldVector.x,
+                        nearSample.macroFieldVector.x +
+                            nearSample.localCorrectionFieldVector.x) &&
+                nearlyEqual(nearSample.totalFieldVector.y,
+                            nearSample.macroFieldVector.y +
+                                nearSample.localCorrectionFieldVector.y) &&
+                nearlyEqual(nearSample.totalFieldVector.z,
+                            nearSample.macroFieldVector.z +
+                                nearSample.localCorrectionFieldVector.z),
+            "宏观场与局部修整量的矩阵合成不正确");
+
+    const auto farSample = model.calculate({5000.0, 1700.0, -900.0});
+    const double farMacro = std::hypot(farSample.macroFieldVector.x,
+        farSample.macroFieldVector.y, farSample.macroFieldVector.z);
+    const double farCorrection = std::hypot(farSample.localCorrectionFieldVector.x,
+        farSample.localCorrectionFieldVector.y,
+        farSample.localCorrectionFieldVector.z);
+    require(farCorrection / farMacro < 1.0e-3,
+            "多偶极子局部修整量没有在远场收敛到椭球宏观场");
 }
 
 /** 验证目标尺寸和航向变化会改变地磁感应三分量结果。 */
@@ -224,6 +263,19 @@ void testValidation()
     }
     require(rejectedTarget, "没有拒绝负航速");
 
+    invalidTarget = createValidParameter();
+    invalidTarget.localCorrectionStrength = 1.1;
+    rejectedTarget = false;
+    try
+    {
+        static_cast<void>(TargetMagneticFieldModel(invalidTarget));
+    }
+    catch (const std::invalid_argument&)
+    {
+        rejectedTarget = true;
+    }
+    require(rejectedTarget, "没有拒绝越界的局部阵列修整系数");
+
     const TargetMagneticFieldModel model(createValidParameter());
     bool rejectedDistance = false;
     try
@@ -298,6 +350,7 @@ int main()
         testThreeComponentCalculation();
         testZeroGeomagneticField();
         testInverseCubeAttenuation();
+        testDipoleArrayMatrixCorrection();
         testGeometryAndHeadingSensitivity();
         testMotionAndTimeSampling();
         testSpatialGrid();

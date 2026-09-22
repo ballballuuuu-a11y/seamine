@@ -1,6 +1,8 @@
 #include "TargetElectricFieldModel.h"
 #include "TargetMagneticFieldModel.h"
 #include "TargetPressureFieldModel.h"
+#include "integration/hjc/ElectricEnvironmentConfig.h"
+#include "integration/hjc/ElectricFieldSimulation.h"
 #include "integration/hjc/MagneticFieldSimulation.h"
 #include "integration/hjc/MagneticEnvironmentConfig.h"
 #include "integration/hjc/PressureFieldSimulation.h"
@@ -88,6 +90,10 @@ TargetMagneticFieldModel::TargetParameter createMagneticDemoTarget()
     param.magneticMaterialRatio = 0.035;
     param.remanentMagnetizationAm = {7.5, 0.8, -0.4};
     param.minimumDistance = 2.0;
+    param.dipoleArrayLongitudinalCount = 7U;
+    param.dipoleArrayTransverseCount = 3U;
+    param.dipoleArrayVerticalCount = 3U;
+    param.localCorrectionStrength = 0.65;
     return param;
 }
 
@@ -179,6 +185,61 @@ void writeCsv(
     }
 }
 
+/** 将 HJC 同次求得的目标、背景和合成电场按 ENU 三分量写出。 */
+void writeCombinedElectricTimeSeriesCsv(
+    const std::string& outputPath, const hjc::field::ElectricSimulationOutput& result)
+{
+    std::ofstream output(outputPath, std::ios::out | std::ios::trunc);
+    if (!output) throw std::runtime_error("无法创建电场合成输出文件：" + outputPath);
+    output << "time_s,signal_ex_uV_m,signal_ey_uV_m,signal_ez_uV_m,"
+              "environment_ex_uV_m,environment_ey_uV_m,environment_ez_uV_m,"
+              "total_ex_uV_m,total_ey_uV_m,total_ez_uV_m,"
+              "signal_magnitude_uV_m,environment_magnitude_uV_m,total_magnitude_uV_m,scalar_anomaly_uV_m,"
+              "target_static_ex_uV_m,target_static_ey_uV_m,target_static_ez_uV_m,"
+              "target_shaft_ex_uV_m,target_shaft_ey_uV_m,target_shaft_ez_uV_m,"
+              "motional_ex_uV_m,motional_ey_uV_m,motional_ez_uV_m,"
+              "shipping_ex_uV_m,shipping_ey_uV_m,shipping_ez_uV_m,"
+              "local_ex_uV_m,local_ey_uV_m,local_ez_uV_m\n";
+    output << std::setprecision(17);
+    constexpr double voltsToMicrovolts = 1.0e6;
+    const auto& components = *result.components;
+    const auto magnitude = [](const hjc::field::ElectricSeriesVm& series, std::size_t index)
+    {
+        return std::hypot(series.x[index], series.y[index], series.z[index]);
+    };
+    const auto writeVector = [&](const hjc::field::ElectricSeriesVm& series, std::size_t index)
+    {
+        output << series.x[index] * voltsToMicrovolts << ','
+               << series.y[index] * voltsToMicrovolts << ','
+               << series.z[index] * voltsToMicrovolts;
+    };
+    for (std::size_t index = 0; index < result.timeSeconds.size(); ++index)
+    {
+        const double signalMagnitude = magnitude(result.signalOnly, index) * voltsToMicrovolts;
+        const double environmentMagnitude = magnitude(result.environmentOnly, index) * voltsToMicrovolts;
+        const double totalMagnitude = magnitude(result.totalField, index) * voltsToMicrovolts;
+        output << result.timeSeconds[index] << ',';
+        writeVector(result.signalOnly, index);
+        output << ',';
+        writeVector(result.environmentOnly, index);
+        output << ',';
+        writeVector(result.totalField, index);
+        output << ',' << signalMagnitude << ',' << environmentMagnitude << ',' << totalMagnitude << ','
+               << totalMagnitude - environmentMagnitude << ',';
+        writeVector(components.staticField, index);
+        output << ',';
+        writeVector(components.shaftField, index);
+        output << ',';
+        writeVector(components.motional, index);
+        output << ',';
+        writeVector(components.shipping, index);
+        output << ',';
+        writeVector(components.local, index);
+        output << '\n';
+    }
+    if (!output) throw std::runtime_error("写入电场合成输出文件失败：" + outputPath);
+}
+
 /**
  * @brief 把目标磁场空间分布覆盖写入 CSV 文件。
  * @param outputPath CSV 输出文件路径。
@@ -199,7 +260,10 @@ void writeMagneticCsv(
               "static_bx_nt,static_by_nt,static_bz_nt,"
               "induced_bx_nt,induced_by_nt,induced_bz_nt,"
               "total_bx_nt,total_by_nt,total_bz_nt,"
-              "static_magnitude_nt,induced_magnitude_nt,total_magnitude_nt\n";
+              "static_magnitude_nt,induced_magnitude_nt,total_magnitude_nt,"
+              "macro_bx_nt,macro_by_nt,macro_bz_nt,"
+              "local_correction_bx_nt,local_correction_by_nt,local_correction_bz_nt,"
+              "dipole_array_node_count\n";
     output << std::setprecision(12);
 
     for (const auto& sample : samples)
@@ -220,7 +284,14 @@ void writeMagneticCsv(
             << sample.totalFieldVector.z << ','
             << sample.staticField << ','
             << sample.inducedField << ','
-            << sample.totalField << '\n';
+            << sample.totalField << ','
+            << sample.macroFieldVector.x << ','
+            << sample.macroFieldVector.y << ','
+            << sample.macroFieldVector.z << ','
+            << sample.localCorrectionFieldVector.x << ','
+            << sample.localCorrectionFieldVector.y << ','
+            << sample.localCorrectionFieldVector.z << ','
+            << sample.dipoleArrayNodeCount << '\n';
     }
 
     if (!output)
@@ -250,7 +321,10 @@ void writeMagneticTimeSeriesCsv(
               "static_bx_nt,static_by_nt,static_bz_nt,"
               "induced_bx_nt,induced_by_nt,induced_bz_nt,"
               "total_bx_nt,total_by_nt,total_bz_nt,"
-              "static_magnitude_nt,induced_magnitude_nt,total_magnitude_nt\n";
+              "static_magnitude_nt,induced_magnitude_nt,total_magnitude_nt,"
+              "macro_bx_nt,macro_by_nt,macro_bz_nt,"
+              "local_correction_bx_nt,local_correction_by_nt,local_correction_bz_nt,"
+              "dipole_array_node_count\n";
     output << std::setprecision(12);
 
     for (const auto& sample : samples)
@@ -275,7 +349,14 @@ void writeMagneticTimeSeriesCsv(
             << sample.totalFieldVector.z << ','
             << sample.staticField << ','
             << sample.inducedField << ','
-            << sample.totalField << '\n';
+            << sample.totalField << ','
+            << sample.macroFieldVector.x << ','
+            << sample.macroFieldVector.y << ','
+            << sample.macroFieldVector.z << ','
+            << sample.localCorrectionFieldVector.x << ','
+            << sample.localCorrectionFieldVector.y << ','
+            << sample.localCorrectionFieldVector.z << ','
+            << sample.dipoleArrayNodeCount << '\n';
     }
 
     if (!output)
@@ -294,6 +375,8 @@ void writeCombinedMagneticTimeSeriesCsv(
               "environment_bx_nt,environment_by_nt,environment_bz_nt,"
               "total_bx_nt,total_by_nt,total_bz_nt,"
               "signal_magnitude_nt,environment_magnitude_nt,total_magnitude_nt,scalar_anomaly_nt,"
+              "target_macro_bx_nt,target_macro_by_nt,target_macro_bz_nt,"
+              "target_local_correction_bx_nt,target_local_correction_by_nt,target_local_correction_bz_nt,"
               "main_bx_nt,main_by_nt,main_bz_nt,"
               "crustal_bx_nt,crustal_by_nt,crustal_bz_nt,crustal_scalar_nt,"
               "fluctuation_bx_nt,fluctuation_by_nt,fluctuation_bz_nt,"
@@ -317,6 +400,11 @@ void writeCombinedMagneticTimeSeriesCsv(
                << result.totalField.x[index] << ',' << result.totalField.y[index] << ',' << result.totalField.z[index] << ','
                << signalMagnitude << ',' << environmentMagnitude << ',' << totalMagnitude << ','
                << totalMagnitude - environmentMagnitude << ','
+               << components.targetMacro.x[index] << ',' << components.targetMacro.y[index] << ','
+               << components.targetMacro.z[index] << ','
+               << components.targetLocalCorrection.x[index] << ','
+               << components.targetLocalCorrection.y[index] << ','
+               << components.targetLocalCorrection.z[index] << ','
                << components.mainField.x[index] << ',' << components.mainField.y[index] << ',' << components.mainField.z[index] << ','
                << components.crustalAnomaly.x[index] << ',' << components.crustalAnomaly.y[index] << ','
                << components.crustalAnomaly.z[index] << ',' << components.crustalAnomalyScalar[index] << ','
@@ -467,6 +555,25 @@ void writeMagneticEnvironmentMetadata(const std::string& outputPath,
     if (!output) throw std::runtime_error("写入磁场环境说明文件失败");
 }
 
+/** 保存电场环境配置和质量标志，明确 HJC 内部与 CSV 的单位换算。 */
+void writeElectricEnvironmentMetadata(const std::string& outputPath,
+    const ElectricEnvironmentConfig& config, const hjc::field::QualityInfo& quality)
+{
+    std::ofstream output(outputPath + ".environment.txt", std::ios::trunc);
+    if (!output) throw std::runtime_error("无法创建电场环境说明文件");
+    output << "电场环境配置与计算记录\n"
+           << "status=" << hjc::field::toString(quality.status) << '\n'
+           << "method=" << quality.method << '\n'
+           << "model_version=" << quality.modelVersion << '\n'
+           << "source=" << quality.sourceUri << '\n';
+    for (const auto& flag : quality.flags) output << "flag=" << flag << '\n';
+    for (const auto& issue : quality.issues)
+        output << "issue=" << issue.fieldPath << ": " << issue.message << '\n';
+    output << "\nHJC 内部使用 V/m；CSV 为便于与原目标模型对照，统一输出 μV/m。\n"
+           << "以下为原始配置；时间采用 TAI 纳秒基准，坐标采用 ENU。\n" << config.sourceText;
+    if (!output) throw std::runtime_error("写入电场环境说明文件失败");
+}
+
 /**
  * @brief 比较两个采样结果与传感器的距离。
  * @param lhs 左侧电场采样结果。
@@ -504,6 +611,30 @@ void printSummary(
     std::cout << "结果文件：" << outputPath << '\n';
 }
 
+/** 显示目标、背景和合成电场的峰值及输出路径。 */
+void printCombinedElectricSummary(
+    const std::string& outputPath, const hjc::field::ElectricSimulationOutput& result)
+{
+    constexpr double voltsToMicrovolts = 1.0e6;
+    std::size_t strongestIndex = 0U;
+    double strongestMagnitude = -1.0;
+    for (std::size_t index = 0; index < result.timeSeconds.size(); ++index)
+    {
+        const double value = std::hypot(result.totalField.x[index],
+            result.totalField.y[index], result.totalField.z[index]);
+        if (value > strongestMagnitude)
+        {
+            strongestMagnitude = value;
+            strongestIndex = index;
+        }
+    }
+    std::cout << "HJC 目标电场与环境背景合成完成\n"
+              << "合成电场采样点数：" << result.timeSeconds.size() << '\n'
+              << "合成场峰值：" << strongestMagnitude * voltsToMicrovolts
+              << " μV/m，发生时刻：" << result.timeSeconds[strongestIndex] << " s\n"
+              << "合成电场结果文件：" << outputPath << '\n';
+}
+
 /** 比较两个磁场采样结果的综合场强。 */
 bool isMagneticFieldWeaker(
     const TargetMagneticFieldModel::MagneticFieldSample& lhs,
@@ -526,6 +657,7 @@ void printMagneticSummary(
 
     std::cout << "磁场空间分布仿真完成\n";
     std::cout << "磁场网格点数：" << samples.size() << '\n';
+    std::cout << "有效多偶极子节点数：" << samples.front().dipoleArrayNodeCount << '\n';
     std::cout << "最大综合目标异常磁场：" << strongest->totalField << " nT\n";
     std::cout << "最大场强位置：("
               << strongest->observationPosition.x << ", "
@@ -548,6 +680,7 @@ void printMagneticTimeSeriesSummary(
 
     std::cout << "运动目标磁场时序仿真完成\n";
     std::cout << "磁场时序采样点数：" << samples.size() << '\n';
+    std::cout << "有效多偶极子节点数：" << samples.front().dipoleArrayNodeCount << '\n';
     std::cout << "磁场峰值：" << strongest->totalField
               << " nT，发生时刻：" << strongest->time << " s\n";
     std::cout << "磁场时序结果文件：" << outputPath << '\n';
@@ -588,7 +721,7 @@ void printPressureTimeSeriesSummary(
 /**
  * @brief 程序入口，生成舰船电场、磁场和水压场仿真 CSV。
  * @param argc 命令行参数总数。
- * @param argv 四个可选输出路径，以及 --pressure-environment 配置文件路径。
+ * @param argv 六个可选输出路径，以及三类环境配置文件路径。
  * @return 成功时返回 EXIT_SUCCESS，参数错误或仿真异常时返回 EXIT_FAILURE。
  */
 int main(int argc, char* argv[])
@@ -597,20 +730,23 @@ int main(int argc, char* argv[])
 
     try
     {
-        // 保持原四个位置参数，新增可选的第五个合成磁场结果路径及两份环境配置。
+        // 保持原有位置参数顺序，并追加磁场、电场合成结果及三份环境配置。
         std::vector<std::string> paths;
         const auto resourceRoot = std::filesystem::absolute(argv[0]).parent_path();
         auto environmentPath = resourceRoot / "pressure_environment_demo.ini";
         auto magneticEnvironmentPath = resourceRoot / "magnetic_environment_demo.ini";
+        auto electricEnvironmentPath = resourceRoot / "electric_environment_demo.ini";
         bool hasEnvironmentPath = false;
         bool hasMagneticEnvironmentPath = false;
+        bool hasElectricEnvironmentPath = false;
         for (int index = 1; index < argc; ++index)
         {
             const std::string argument = argv[index];
             if (argument == "--help")
             {
-                std::cout << "用法：seamine_simulator [电场CSV] [磁场分布CSV] [磁场时序CSV] [水压CSV] [合成磁场CSV] "
-                             "[--pressure-environment 水压配置.ini] [--magnetic-environment 磁场配置.ini]\n"
+                std::cout << "用法：seamine_simulator [目标电场CSV] [磁场分布CSV] [磁场时序CSV] [水压CSV] "
+                             "[合成磁场CSV] [合成电场CSV] [--pressure-environment 水压配置.ini] "
+                             "[--magnetic-environment 磁场配置.ini] [--electric-environment 电场配置.ini]\n"
                              "默认使用程序旁明确标记为合成场景的演示配置。\n";
                 return EXIT_SUCCESS;
             }
@@ -628,19 +764,27 @@ int main(int argc, char* argv[])
                 magneticEnvironmentPath = std::filesystem::u8path(argv[++index]);
                 hasMagneticEnvironmentPath = true;
             }
+            else if (argument == "--electric-environment")
+            {
+                if (hasElectricEnvironmentPath || index + 1 >= argc)
+                    throw std::invalid_argument("--electric-environment 必须且只能指定一个配置路径");
+                electricEnvironmentPath = std::filesystem::u8path(argv[++index]);
+                hasElectricEnvironmentPath = true;
+            }
             else if (argument.compare(0, 2, "--") == 0)
                 throw std::invalid_argument("未知命令行参数：" + argument);
             else paths.push_back(argument);
         }
-        if (paths.size() > 5) throw std::invalid_argument("最多允许指定五个输出文件路径，请使用 --help 查看用法");
+        if (paths.size() > 6) throw std::invalid_argument("最多允许指定六个输出文件路径，请使用 --help 查看用法");
         const std::string outputPath = paths.size() >= 1 ? paths[0] : "electric_field_simulation.csv";
         const std::string magneticOutputPath = paths.size() >= 2 ? paths[1] : "magnetic_field_distribution.csv";
         const std::string magneticTimeOutputPath = paths.size() >= 3 ? paths[2] : "magnetic_field_time_series.csv";
         const std::string pressureTimeOutputPath = paths.size() >= 4 ? paths[3] : "pressure_field_time_series.csv";
         const std::string combinedMagneticOutputPath = paths.size() >= 5 ? paths[4] : "magnetic_field_combined_time_series.csv";
+        const std::string combinedElectricOutputPath = paths.size() >= 6 ? paths[5] : "electric_field_combined_time_series.csv";
         const auto pressureEnvironment = loadPressureEnvironmentConfig(environmentPath);
         const auto magneticEnvironment = loadMagneticEnvironmentConfig(magneticEnvironmentPath, resourceRoot);
-        const TargetElectricFieldModel model(createDemoTarget());
+        const auto electricEnvironment = loadElectricEnvironmentConfig(electricEnvironmentPath);
 
         // 固定传感器位于水下三十米，目标从其侧前方匀速通过。
         const TargetElectricFieldModel::Vector3 sensorPosition{
@@ -651,6 +795,13 @@ int main(int argc, char* argv[])
         constexpr double durationSeconds = 75.0;
         constexpr double sampleRateHz = 20.0;
 
+        // 电导率由同一环境快照提供，使独立目标曲线和 HJC 合成链采用同一介质参数。
+        auto electricTarget = createDemoTarget();
+        electricTarget.conductivity = *hjc::field::sampleField(
+            electricEnvironment.environment.conductivitySM,
+            {sensorPosition.x, sensorPosition.y, sensorPosition.z});
+        const TargetElectricFieldModel model(electricTarget);
+
         const auto signals = model.simulate(
             sensorPosition,
             startTimeSeconds,
@@ -658,6 +809,21 @@ int main(int argc, char* argv[])
             sampleRateHz);
         writeCsv(outputPath, signals);
         printSummary(outputPath, signals);
+
+        // HJC 在同一时间轴上计算目标静态/轴频电场、环境背景和逐分量总场。
+        ElectricFieldSimulation::Request electricRequest;
+        electricRequest.target = electricTarget;
+        electricRequest.targetSourceId = 1;
+        electricRequest.targetLineageId = "main-electric-target";
+        electricRequest.environment = electricEnvironment.environment;
+        electricRequest.sampling = {{sensorPosition.x, sensorPosition.y, sensorPosition.z},
+            startTimeSeconds, durationSeconds, sampleRateHz};
+        const auto combinedElectric = ElectricFieldSimulation::simulate(electricRequest);
+        writeCombinedElectricTimeSeriesCsv(combinedElectricOutputPath, combinedElectric);
+        writeElectricEnvironmentMetadata(combinedElectricOutputPath,
+            electricEnvironment, combinedElectric.quality);
+        printCombinedElectricSummary(combinedElectricOutputPath, combinedElectric);
+        std::cout << "电场环境配置：" << electricEnvironmentPath.u8string() << '\n';
 
         // 在目标下方固定深度的水平面生成静磁场和感应磁场三分量分布。
         const TargetMagneticFieldModel magneticModel(createMagneticDemoTarget());
@@ -689,7 +855,7 @@ int main(int argc, char* argv[])
         printMagneticTimeSeriesSummary(
             magneticTimeOutputPath, magneticTimeSamples);
 
-        // 同一目标另由 HJC 求目标异常、传感器环境背景和逐分量合成；旧结果保持不变。
+        // 同一目标另由 HJC 求目标异常、传感器环境背景和逐分量合成；独立结果保持不变。
         MagneticFieldSimulation::Request magneticRequest;
         magneticRequest.target = createMovingMagneticDemoTarget();
         magneticRequest.environment = magneticEnvironment.environment;

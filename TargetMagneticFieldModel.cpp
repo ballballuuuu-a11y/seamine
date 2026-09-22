@@ -12,6 +12,10 @@ constexpr double kPi = 3.14159265358979323846;          // 圆周率。
 constexpr double kVacuumPermeability = 4.0e-7 * kPi;   // 真空磁导率，单位 H/m。
 constexpr double kNanoteslaPerTesla = 1.0e9;            // 特斯拉到纳特的换算系数。
 constexpr std::size_t kIntegrationSteps = 4096U;        // 退磁因子数值积分步数。
+constexpr double kDipoleArrayExtentRatio = 0.78;         // 阵列节点相对椭球半轴的最大范围。
+
+/** 三阶磁场影响矩阵，单位为 nT/(A·m²)。 */
+using Matrix3 = std::array<std::array<double, 3U>, 3U>;
 
 /** 判断浮点数是否为有限值。 */
 bool isFinite(double value) noexcept
@@ -176,9 +180,8 @@ std::array<double, 3U> calculateDemagnetizingFactors(double length,
     return factors;
 }
 
-/** 使用磁偶极子公式计算指定观测位置的异常磁场，结果单位为 nT。 */
-TargetMagneticFieldModel::Vector3 calculateDipoleField(
-    const TargetMagneticFieldModel::Vector3& moment,
+/** 计算单个偶极子从磁矩到观测磁场的三阶影响矩阵。 */
+Matrix3 calculateDipoleInfluenceMatrix(
     const TargetMagneticFieldModel::Vector3& displacement,
     double distance) noexcept
 {
@@ -186,15 +189,43 @@ TargetMagneticFieldModel::Vector3 calculateDipoleField(
         displacement.x / distance,
         displacement.y / distance,
         displacement.z / distance};
-    const double projection = dot(moment, direction);
     const double coefficient =
         (kVacuumPermeability / (4.0 * kPi)) * kNanoteslaPerTesla /
         (distance * distance * distance);
+    const std::array<double, 3U> n{direction.x, direction.y, direction.z};
+    Matrix3 matrix{};
+    for (std::size_t row = 0U; row < 3U; ++row)
+    {
+        for (std::size_t column = 0U; column < 3U; ++column)
+        {
+            const double identity = row == column ? 1.0 : 0.0;
+            matrix[row][column] = coefficient *
+                (3.0 * n[row] * n[column] - identity);
+        }
+    }
+    return matrix;
+}
 
+/** 使用三阶影响矩阵把磁矩映射为磁场三分量。 */
+TargetMagneticFieldModel::Vector3 multiply(
+    const Matrix3& matrix,
+    const TargetMagneticFieldModel::Vector3& moment) noexcept
+{
     return {
-        coefficient * (3.0 * projection * direction.x - moment.x),
-        coefficient * (3.0 * projection * direction.y - moment.y),
-        coefficient * (3.0 * projection * direction.z - moment.z)};
+        matrix[0][0] * moment.x + matrix[0][1] * moment.y + matrix[0][2] * moment.z,
+        matrix[1][0] * moment.x + matrix[1][1] * moment.y + matrix[1][2] * moment.z,
+        matrix[2][0] * moment.x + matrix[2][1] * moment.y + matrix[2][2] * moment.z};
+}
+
+/** 计算对称阵列坐标；单节点轴固定在目标中心。 */
+double dipoleArrayCoordinate(std::size_t count, std::size_t index) noexcept
+{
+    if (count == 1U)
+    {
+        return 0.0;
+    }
+    return -kDipoleArrayExtentRatio + 2.0 * kDipoleArrayExtentRatio *
+        static_cast<double>(index) / static_cast<double>(count - 1U);
 }
 
 /** 根据采样点序号在线性区间内计算坐标，单点轴取最小坐标。 */
@@ -223,6 +254,7 @@ void TargetMagneticFieldModel::setTarget(const TargetParameter& param)
     validateTarget(param);
     m_target = param;
     rebuildDipoleMoments();
+    rebuildDipoleArray();
     m_configured = true;
 }
 
@@ -281,18 +313,60 @@ TargetMagneticFieldModel::calculate(const Vector3& observationPosition,
     sample.targetPosition = targetPosition;
     sample.distance = distance;
     sample.time = timeSeconds;
-    //
-    sample.staticFieldVector =
-        calculateDipoleField(m_staticDipoleMoment, displacement, distance);
-    sample.inducedFieldVector =
-        calculateDipoleField(m_inducedDipoleMoment, displacement, distance);
+    // 先构造中心宏观影响矩阵，再用椭球内部阵列矩阵修整近场空间分布。
+    const Matrix3 macroMatrix = calculateDipoleInfluenceMatrix(displacement, distance);
+    Matrix3 arrayMatrix{};
+    for (std::size_t nodeIndex = 0U;
+         nodeIndex < m_dipoleOffsetsGlobal.size();
+         ++nodeIndex)
+    {
+        const Vector3 nodeDisplacement{
+            displacement.x - m_dipoleOffsetsGlobal[nodeIndex].x,
+            displacement.y - m_dipoleOffsetsGlobal[nodeIndex].y,
+            displacement.z - m_dipoleOffsetsGlobal[nodeIndex].z};
+        const double nodeDistance = magnitude(nodeDisplacement);
+        const Matrix3 nodeMatrix =
+            calculateDipoleInfluenceMatrix(nodeDisplacement, nodeDistance);
+        for (std::size_t row = 0U; row < 3U; ++row)
+        {
+            for (std::size_t column = 0U; column < 3U; ++column)
+            {
+                arrayMatrix[row][column] +=
+                    m_dipoleWeights[nodeIndex] * nodeMatrix[row][column];
+            }
+        }
+    }
+    Matrix3 hybridMatrix{};
+    for (std::size_t row = 0U; row < 3U; ++row)
+    {
+        for (std::size_t column = 0U; column < 3U; ++column)
+        {
+            hybridMatrix[row][column] = macroMatrix[row][column] +
+                m_target.localCorrectionStrength *
+                (arrayMatrix[row][column] - macroMatrix[row][column]);
+        }
+    }
+
+    const Vector3 macroStatic = multiply(macroMatrix, m_staticDipoleMoment);
+    const Vector3 macroInduced = multiply(macroMatrix, m_inducedDipoleMoment);
+    sample.staticFieldVector = multiply(hybridMatrix, m_staticDipoleMoment);
+    sample.inducedFieldVector = multiply(hybridMatrix, m_inducedDipoleMoment);
     sample.totalFieldVector = {
         sample.staticFieldVector.x + sample.inducedFieldVector.x,
         sample.staticFieldVector.y + sample.inducedFieldVector.y,
         sample.staticFieldVector.z + sample.inducedFieldVector.z};
+    sample.macroFieldVector = {
+        macroStatic.x + macroInduced.x,
+        macroStatic.y + macroInduced.y,
+        macroStatic.z + macroInduced.z};
+    sample.localCorrectionFieldVector = {
+        sample.totalFieldVector.x - sample.macroFieldVector.x,
+        sample.totalFieldVector.y - sample.macroFieldVector.y,
+        sample.totalFieldVector.z - sample.macroFieldVector.z};
     sample.staticField = magnitude(sample.staticFieldVector);
     sample.inducedField = magnitude(sample.inducedFieldVector);
     sample.totalField = magnitude(sample.totalFieldVector);
+    sample.dipoleArrayNodeCount = m_dipoleOffsetsGlobal.size();
     return sample;
 }
 
@@ -408,6 +482,22 @@ void TargetMagneticFieldModel::validateTarget(const TargetParameter& param)
     {
         throw std::invalid_argument("最小观测距离必须为有限正数");
     }
+    if (param.dipoleArrayLongitudinalCount == 0U ||
+        param.dipoleArrayTransverseCount == 0U ||
+        param.dipoleArrayVerticalCount == 0U ||
+        param.dipoleArrayLongitudinalCount > kMaximumDipoleArrayNodeCount /
+            param.dipoleArrayTransverseCount ||
+        param.dipoleArrayLongitudinalCount * param.dipoleArrayTransverseCount >
+            kMaximumDipoleArrayNodeCount / param.dipoleArrayVerticalCount)
+    {
+        throw std::invalid_argument("多偶极子阵列各方向节点数必须大于0且候选节点总数不能超过4096");
+    }
+    if (!isFinite(param.localCorrectionStrength) ||
+        param.localCorrectionStrength < 0.0 ||
+        param.localCorrectionStrength > 1.0)
+    {
+        throw std::invalid_argument("局部阵列修整系数必须为[0,1]范围内的有限数值");
+    }
 }
 
 void TargetMagneticFieldModel::validateGrid(const GridParameter& grid)
@@ -465,6 +555,70 @@ void TargetMagneticFieldModel::rebuildDipoleMoments()
         magneticVolume * susceptibility * magneticFieldStrength.z /
             (1.0 + factors[2] * susceptibility)};
     m_inducedDipoleMoment = bodyToGlobal(inducedMomentBody, m_target);
+}
+
+void TargetMagneticFieldModel::rebuildDipoleArray()
+{
+    m_dipoleOffsetsGlobal.clear();
+    m_dipoleWeights.clear();
+    const double semiLength = m_target.length * 0.5;
+    const double semiWidth = m_target.width * 0.5;
+    const double semiHeight = m_target.height * 0.5;
+    double weightSum = 0.0;
+
+    for (std::size_t zIndex = 0U;
+         zIndex < m_target.dipoleArrayVerticalCount;
+         ++zIndex)
+    {
+        const double normalizedZ = dipoleArrayCoordinate(
+            m_target.dipoleArrayVerticalCount, zIndex);
+        for (std::size_t yIndex = 0U;
+             yIndex < m_target.dipoleArrayTransverseCount;
+             ++yIndex)
+        {
+            const double normalizedY = dipoleArrayCoordinate(
+                m_target.dipoleArrayTransverseCount, yIndex);
+            for (std::size_t xIndex = 0U;
+                 xIndex < m_target.dipoleArrayLongitudinalCount;
+                 ++xIndex)
+            {
+                const double normalizedX = dipoleArrayCoordinate(
+                    m_target.dipoleArrayLongitudinalCount, xIndex);
+                const double ellipsoidCoordinate =
+                    normalizedX * normalizedX +
+                    normalizedY * normalizedY +
+                    normalizedZ * normalizedZ;
+                if (ellipsoidCoordinate >= 1.0)
+                {
+                    continue;
+                }
+
+                // 中心权重较大、边缘权重平滑减小，减少离散阵列造成的尖峰。
+                const double weight = 1.0 - ellipsoidCoordinate;
+                const Vector3 bodyOffset{
+                    normalizedX * semiLength,
+                    normalizedY * semiWidth,
+                    normalizedZ * semiHeight};
+                m_dipoleOffsetsGlobal.push_back(bodyToGlobal(bodyOffset, m_target));
+                m_dipoleWeights.push_back(weight);
+                weightSum += weight;
+            }
+        }
+    }
+
+    if (m_dipoleWeights.empty())
+    {
+        // 极低分辨率偶数网格可能没有节点落入椭球，退化为中心单节点仍保持模型可计算。
+        m_dipoleOffsetsGlobal.push_back({});
+        m_dipoleWeights.push_back(1.0);
+        return;
+    }
+
+    // 任意合法节点配置至少包含中心附近节点；归一化后保持总磁矩严格不变。
+    for (double& weight : m_dipoleWeights)
+    {
+        weight /= weightSum;
+    }
 }
 
 void TargetMagneticFieldModel::ensureConfigured() const

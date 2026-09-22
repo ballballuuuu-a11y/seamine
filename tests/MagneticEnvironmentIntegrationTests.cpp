@@ -74,6 +74,15 @@ void testCombinedField(const MagneticEnvironmentConfig& config)
             output.totalField.y[index], 1.0e-12, "北向合成错误");
         near(output.signalOnly.z[index] + output.environmentOnly.z[index],
             output.totalField.z[index], 1.0e-12, "上向合成错误");
+        near(output.components->targetMacro.x[index] +
+                output.components->targetLocalCorrection.x[index],
+            output.signalOnly.x[index], 1.0e-12, "目标东向宏观场与局部修整合成错误");
+        near(output.components->targetMacro.y[index] +
+                output.components->targetLocalCorrection.y[index],
+            output.signalOnly.y[index], 1.0e-12, "目标北向宏观场与局部修整合成错误");
+        near(output.components->targetMacro.z[index] +
+                output.components->targetLocalCorrection.z[index],
+            output.signalOnly.z[index], 1.0e-12, "目标上向宏观场与局部修整合成错误");
         require(std::hypot(output.environmentOnly.x[index], output.environmentOnly.y[index],
             output.environmentOnly.z[index]) > 10000.0, "WMM 环境背景未参与计算");
     }
@@ -132,6 +141,10 @@ void testRejectedInputs(const MagneticEnvironmentConfig& config)
     request.target.pitchDegrees = std::numeric_limits<double>::quiet_NaN();
     rejects([&] { static_cast<void>(MagneticFieldSimulation::simulate(request)); },
         "非法目标姿态仍返回磁场");
+    request = makeRequest(config);
+    request.target.dipoleArrayLongitudinalCount = 0U;
+    rejects([&] { static_cast<void>(MagneticFieldSimulation::simulate(request)); },
+        "空的多偶极子阵列仍返回磁场");
 }
 
 /** 明确锁定 HJC 正俯仰使舰首抬升的姿态约定，避免旧实现差异被忽略。 */

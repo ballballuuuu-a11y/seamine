@@ -53,6 +53,19 @@ target_include_directories(
         ${CMAKE_CURRENT_SOURCE_DIR}
 )
 
+# 电场适配层把现有目标参数交给 HJC，并输出目标、环境和合成三组电场。
+add_library(electric_environment_simulation
+    integration/hjc/ElectricFieldSimulation.cpp
+    integration/hjc/ElectricEnvironmentConfig.cpp
+)
+target_include_directories(electric_environment_simulation PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(electric_environment_simulation PUBLIC target_electric_field_model hjc_field)
+if(MSVC)
+    target_compile_options(electric_environment_simulation PRIVATE /W4 /permissive- /utf-8)
+else()
+    target_compile_options(electric_environment_simulation PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+
 # 构建水压合成适配层，并为新增代码启用严格警告和中文源文件编码。
 add_library(pressure_environment_simulation
     integration/hjc/PressureFieldSimulation.cpp
@@ -119,6 +132,7 @@ target_link_libraries(
         target_electric_field_model
         target_magnetic_field_model
         target_pressure_field_model
+        electric_environment_simulation
         pressure_environment_simulation
         magnetic_environment_simulation
 )
@@ -127,6 +141,9 @@ add_custom_command(TARGET seamine_simulator POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
         "${CMAKE_CURRENT_SOURCE_DIR}/config/pressure_environment_demo.ini"
         "$<TARGET_FILE_DIR:seamine_simulator>/pressure_environment_demo.ini"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${CMAKE_CURRENT_SOURCE_DIR}/config/electric_environment_demo.ini"
+        "$<TARGET_FILE_DIR:seamine_simulator>/electric_environment_demo.ini"
     VERBATIM
 )
 # 磁场演示资源随程序部署，避免运行时依赖源码机器的绝对路径。
@@ -149,6 +166,18 @@ endif()
 
 # 启用内置测试目标，构建后可通过 CTest 一键验证。
 if(BUILD_TESTING)
+    # 电场集成测试覆盖三组矢量场、背景分量、单位换算、去重和配置校验。
+    add_executable(electric_environment_integration_tests tests/ElectricEnvironmentIntegrationTests.cpp)
+    target_link_libraries(electric_environment_integration_tests PRIVATE electric_environment_simulation)
+    if(MSVC)
+        target_compile_options(electric_environment_integration_tests PRIVATE /W4 /permissive- /utf-8)
+    else()
+        target_compile_options(electric_environment_integration_tests PRIVATE -Wall -Wextra -Wpedantic)
+    endif()
+    add_test(NAME electric_environment_integration_tests COMMAND electric_environment_integration_tests
+        "${CMAKE_CURRENT_SOURCE_DIR}/config/electric_environment_demo.ini"
+        "${CMAKE_CURRENT_BINARY_DIR}/electric_environment_test_config.ini")
+
     # 磁场集成回归覆盖三组矢量场、近场拒绝、环境有效期及显式资源缺失。
     add_executable(magnetic_environment_integration_tests tests/MagneticEnvironmentIntegrationTests.cpp)
     target_link_libraries(magnetic_environment_integration_tests PRIVATE magnetic_environment_simulation)
@@ -258,6 +287,7 @@ install(
         target_electric_field_model
         target_magnetic_field_model
         target_pressure_field_model
+        electric_environment_simulation
         pressure_environment_simulation
         magnetic_environment_simulation
         hjc_field
@@ -276,10 +306,13 @@ install(
 # 安装适配接口及所需的 HJC 头文件和第三方许可证。
 install(FILES integration/hjc/PressureFieldSimulation.h integration/hjc/PressureEnvironmentConfig.h
     DESTINATION include/integration/hjc)
+install(FILES integration/hjc/ElectricFieldSimulation.h integration/hjc/ElectricEnvironmentConfig.h
+    DESTINATION include/integration/hjc)
 install(FILES integration/hjc/MagneticFieldSimulation.h integration/hjc/MagneticEnvironmentConfig.h
     DESTINATION include/integration/hjc)
 install(DIRECTORY HJC/include/hjc DESTINATION include)
 install(FILES config/pressure_environment_demo.ini DESTINATION bin)
+install(FILES config/electric_environment_demo.ini DESTINATION bin)
 install(FILES config/magnetic_environment_demo.ini DESTINATION bin)
 install(FILES HJC/data/WMMHR2025/WMMHR.COF DESTINATION bin/data/WMMHR2025)
 install(FILES HJC/THIRD_PARTY_NOTICES.md HJC/third_party/gsw/LICENSE.txt DESTINATION share/seamine/HJC)
